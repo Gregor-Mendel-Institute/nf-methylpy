@@ -15,15 +15,21 @@
 /*
  * SET UP CONFIGURATION VARIABLES
  */
+params.project = "cegs"
+build_index = false
+params.outdir = './methylpy'
+params.umeth = "ChrC:"
+params.fasta = false
+params.file_ext = file(params.reads).getExtension() ?: false
+params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
+
 params.name = false
-params.project = false
 params.clusterOptions = false
 params.email = false
 params.plaintext_email = false
 params.genome = false
 params.bismark_index = params.genome ? params.genomes[ params.genome ].bismark ?: false : false
 params.bwa_meth_index = params.genome ? params.genomes[ params.genome ].bwa_meth ?: false : false
-params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
 params.fasta_index = params.genome ? params.genomes[ params.genome ].fasta_index ?: false : false
 
 // Check that Nextflow version is up to date enough
@@ -53,7 +59,9 @@ if( workflow.profile == 'standard'){
 }
 
 // Validate inputs
-if (params.aligner != 'bismark' && params.aligner != 'bwameth'){
+if (params.aligner == 'methylpy'){
+  "Running methylpy"
+} else if (params.aligner != 'bismark' && params.aligner != 'bwameth'){
     exit 1, "Invalid aligner option: ${params.aligner}. Valid options: 'bismark', 'bwameth'"
 }
 if( params.bismark_index && params.aligner == 'bismark' ){
@@ -82,6 +90,18 @@ else if( params.aligner == 'bwameth') {
 }
 multiqc_config = file(params.multiqc_config)
 
+if ( params.fasta && params.aligner == 'methylpy' ){
+    genome = file(params.fasta)
+    reffol = genome.parent
+    refid = genome.baseName
+    if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
+    methylpy_indices = Channel
+      .fromPath( "$reffol/${refid}_methylpy/${refid}*" )
+      .ifEmpty { build_index = true }
+      .subscribe onComplete: { checked_genome_index = true }
+}
+
+
 // Validate inputs
 if( workflow.profile == 'uppmax' || workflow.profile == 'uppmax_devel' ){
     if ( !params.project ) exit 1, "No UPPMAX project ID found! Use --project"
@@ -95,6 +115,7 @@ if( !(workflow.runName ==~ /[a-z]+_[a-z]+/) ){
 }
 
 // Library prep presets
+params.illumina = true
 params.rrbs = false
 params.pbat = false
 params.single_cell = false
@@ -137,10 +158,14 @@ if(params.pbat){
 /*
  * Create a channel for input read files
  */
+num_files = 1
+if ( params.file_ext == 'fastq' ){
+  num_files = params.singleEnd ? 1 : 2
+}
 Channel
-    .fromFilePairs( params.reads, size: params.singleEnd ? 1 : 2 )
+    .fromFilePairs( params.reads, size: num_files)
     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-    .into { read_files_fastqc; read_files_trimming }
+    .into { read_files_processing }
 
 log.info "=================================================="
 log.info " nf-core/methylseq : Bisulfite-Seq Best Practice v${params.version}"
@@ -150,7 +175,7 @@ summary['Run Name']       = custom_runName ?: workflow.runName
 summary['Reads']          = params.reads
 summary['Aligner']        = params.aligner
 summary['Data Type']      = params.singleEnd ? 'Single-End' : 'Paired-End'
-summary['Genome']         = params.genome
+summary['Genome']         = params.genome ?: genome
 if(params.bismark_index) summary['Bismark Index'] = params.bismark_index
 if(params.bwa_meth_index) summary['BWA-Meth Index'] = "${params.bwa_meth_index}*"
 else if(params.fasta)    summary['Fasta Ref'] = params.fasta
@@ -196,9 +221,35 @@ log.info summary.collect { k,v -> "${k.padRight(18)}: $v" }.join("\n")
 log.info "========================================="
 
 
+// PREPROCESSING - Build methylpy genome index
+
+if (build_index == true && params.aligner == 'methylpy'){
+  process makeMethylpyIndex {
+    publishDir path: "${reffol}", mode: 'copy',
+            saveAs: {filename -> filename.indexOf(".fai") > 0 ? "$filename" : "${refid}_methylpy/$filename"}
+
+    input:
+    file genome
+    checked_genome_index
+
+    output:
+    file "${genome}.fai" into genome_index
+    file "${refid}*" into built_methylpy_index
+
+    script:
+    """
+    samtools faidx ${genome}
+    methylpy build-reference --input-files ${genome} --output-prefix ${refid} --bowtie2 True
+    """
+  }
+} else if (checked_genome_index == true){
+  genome_index = Channel.fromPath("${reffol}/${refid}.fasta.fai")
+  built_methylpy_index = Channel.fromPath("${reffol}/${refid}_methylpy/${refid}*")
+}
+
 /*
- * PREPROCESSING - Build Bismark index
- */
+* PREPROCESSING - Build Bismark index
+*/
 if(!params.bismark_index && params.fasta && params.aligner == 'bismark'){
     process makeBismarkIndex {
         publishDir path: { params.saveReference ? "${params.outdir}/reference_genome" : params.outdir },
@@ -263,6 +314,48 @@ if(!params.fasta_index && params.fasta && params.aligner == 'bwameth'){
     }
 }
 
+// Step 0, preprocessing input read files
+
+if (params.file_ext == "fastq"){
+  read_files_processing.into { read_files_fastqc; read_files_trimming }
+} else {
+  process reads_preprocess {
+    tag { params.reads }
+    storeDir "${params.tmpdir}/rawreads"
+
+    input:
+    set val(name), file(reads) from read_files_processing
+
+    output:
+    set val(name), file("${prefix}*fastq") into read_files_fastqc
+    set val(name), file("${prefix}*fastq") into read_files_trimming
+
+    script:
+    if (params.singleEnd) {
+      prefix = reads.toString() - ~/(\.sra)?(\.bam)?$/
+      if (reads.getExtension() == "sra") {
+        """
+        fastq-dump $reads
+        """
+      } else if (reads.getExtension() == "bam") {
+        """
+        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${prefix}.fastq VALIDATION_STRINGENCY=LENIENT
+        """
+      }
+    } else {
+      prefix = reads.toString() - ~/(\.sra)?(\.bam)?$/
+      if (reads[0].getExtension() == "sra") {
+        """
+        fastq-dump --split-files $reads
+        """
+      } else if (reads.getExtension() == "bam") {
+        """
+        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${prefix}_1.fastq SECOND_END_FASTQ=${prefix}_2.fastq VALIDATION_STRINGENCY=LENIENT
+        """
+      }
+    }
+  }
+}
 
 /*
  * STEP 1 - FastQC
@@ -314,18 +407,77 @@ if(params.notrim){
         tpc_r1 = params.three_prime_clip_r1 > 0 ? "--three_prime_clip_r1 ${params.three_prime_clip_r1}" : ''
         tpc_r2 = params.three_prime_clip_r2 > 0 ? "--three_prime_clip_r2 ${params.three_prime_clip_r2}" : ''
         rrbs = params.rrbs ? "--rrbs" : ''
+        illumina = params.illumina ? "--illumina" : ''
         non_directional = params.rrbs && params.non_directional ? "--non_directional" : ''
         if (params.singleEnd) {
             """
-            trim_galore --fastqc --gzip $rrbs $c_r1 $tpc_r1 $reads
+            trim_galore --fastqc --gzip $illumina $rrbs $c_r1 $tpc_r1 $reads
             """
         } else {
             """
-            trim_galore --paired --fastqc --gzip $rrbs $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
+            trim_galore --paired --fastqc --gzip $illumina $rrbs $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
             """
         }
     }
 }
+
+// 3 - align with methylpy
+
+if(params.aligner == 'methylpy'){
+  process methylpy_align {
+    tag "$name"
+    publishDir "${params.outdir}", mode: 'copy',
+        saveAs: {filename ->
+            if (filename.indexOf(".bam") > 0) "alignedBams/$filename"
+            else if (filename =~ '^allc' ) "allc/$filename"
+            else if (filename =~ '^conversion' ) "info/$filename"
+          }
+
+    input:
+    set val(name), file(reads) from trimmed_reads
+    file(meth_index) from built_methylpy_index
+    file(meth_genome_index) from genome_index
+
+    output:
+    file "*processed_reads_no_clonal.bam" into aligned_bam
+    file "allc_*tsv.gz" into allc
+    file "conversion_rate_${prefix}.txt" into conv_rate
+
+    script:
+    if (params.singleEnd) {
+        prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
+        """
+        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} > log.txt 2>&1
+        cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
+        """
+    } else {
+        prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
+        """
+        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard ${EBROOTPICARD}  --binom-test True  --unmethylated-control $params.umeth > log.txt 2>&1
+        cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
+        """
+    }
+  }
+
+  process bam_index {
+    tag "$name"
+    publishDir "${params.outdir}/alignedBams", mode: 'copy'
+
+    input:
+    file aligned_bam from aligned_bam
+
+    output:
+    file "*processed_reads_no_clonal.bam.bai" into aligned_bam_index
+
+    script:
+    """
+    samtools index $aligned_bam
+    """
+  }
+
+}
+
+
 
 /*
  * STEP 3.1 - align with Bismark
@@ -693,7 +845,6 @@ else {
 
 /*
  * STEP 8 - Qualimap
- */
 process qualimap {
     tag "${bam.baseName}"
     publishDir "${params.outdir}/qualimap", mode: 'copy'
@@ -717,10 +868,10 @@ process qualimap {
         -nt ${task.cpus}
     """
 }
+*/
 
 /*
  * Parse software version numbers
- */
 process get_software_versions {
 
     output:
@@ -749,12 +900,11 @@ process get_software_versions {
     scrape_software_versions.py &> software_versions_mqc.yaml
     """
 }
-
+*/
 
 
 /*
  * STEP 9 - MultiQC
- */
 process multiqc {
     publishDir "${params.outdir}/MultiQC", mode: 'copy'
 
@@ -787,10 +937,11 @@ process multiqc {
     multiqc -f $rtitle $rfilename --config $multiqc_config .
     """
 }
+*/
 
 /*
  * Completion e-mail notification
- */
+ *
 workflow.onComplete {
 
     // Set up the e-mail variables
@@ -888,3 +1039,4 @@ workflow.onComplete {
     }
 
 }
+*/
