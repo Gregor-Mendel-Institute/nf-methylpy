@@ -20,7 +20,7 @@ build_index = false
 params.outdir = './methylpy'
 params.umeth = "ChrC:"
 params.fasta = false
-params.file_ext = file(params.reads).getExtension() ?: false
+params.file_ext = "bam"  // please change this accordingly..
 params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
 
 params.name = false
@@ -162,10 +162,9 @@ num_files = 1
 if ( params.file_ext == 'fastq' ){
   num_files = params.singleEnd ? 1 : 2
 }
-Channel
-    .fromFilePairs( params.reads, size: num_files)
+read_files_processing = Channel
+    .fromFilePairs( params.reads, size: num_files )
     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-    .into { read_files_processing }
 
 log.info "=================================================="
 log.info " nf-core/methylseq : Bisulfite-Seq Best Practice v${params.version}"
@@ -453,7 +452,7 @@ if(params.aligner == 'methylpy'){
     } else {
         prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
         """
-        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard ${EBROOTPICARD}  --binom-test True  --unmethylated-control $params.umeth > log.txt 2>&1
+        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control $params.umeth > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
         """
     }
