@@ -13,6 +13,14 @@
 
 
 /*
+
+Simply run this
+
+nextflow run ~/mygit/methylseq/main.nf --reads "*bam" --file_ext bam --fasta ~/TAiR10_ARABIDOPSIS/TAIR10_wholeGenome.fasta --outdir output_folder
+
+*/
+
+/*
  * SET UP CONFIGURATION VARIABLES
  */
 params.project = "cegs"
@@ -319,7 +327,7 @@ if (params.file_ext == "fastq"){
   read_files_processing.into { read_files_fastqc; read_files_trimming }
 } else {
   process reads_preprocess {
-    tag { params.reads }
+    tag "$name"
     storeDir "${params.tmpdir}/rawreads"
 
     input:
@@ -434,25 +442,27 @@ if(params.aligner == 'methylpy'){
 
     input:
     set val(name), file(reads) from trimmed_reads
-    file(meth_index) from built_methylpy_index
-    file(meth_genome_index) from genome_index
+    file(meth_index) from built_methylpy_index.collect()
+    file(meth_genome_index) from genome_index.collect()
 
     output:
-    file "*processed_reads_no_clonal.bam" into aligned_bam
-    file "allc_*tsv.gz" into allc
-    file "conversion_rate_${prefix}.txt" into conv_rate
+    set val(name), file("*processed_reads_no_clonal.bam") into aligned_bam
+    set val(name), file("allc_*tsv.gz") into allc
+    set val(name), file("conversion_rate_${prefix}.txt") into conv_rate
 
     script:
     if (params.singleEnd) {
         prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
         """
-        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} > log.txt 2>&1
+        export TMPDIR="${params.tmpdir}"
+        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
         """
     } else {
         prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
         """
-        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control $params.umeth > log.txt 2>&1
+        export TMPDIR="${params.tmpdir}"
+        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
         """
     }
@@ -463,14 +473,14 @@ if(params.aligner == 'methylpy'){
     publishDir "${params.outdir}/alignedBams", mode: 'copy'
 
     input:
-    file aligned_bam from aligned_bam
+    set val(name), file(bam) from aligned_bam
 
     output:
-    file "*processed_reads_no_clonal.bam.bai" into aligned_bam_index
+    set val(name), file("*processed_reads_no_clonal.bam.bai") into aligned_bam_index
 
     script:
     """
-    samtools index $aligned_bam
+    samtools index $bam
     """
   }
 
