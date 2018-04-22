@@ -16,9 +16,10 @@
  * SET UP CONFIGURATION VARIABLES
  */
 
-params.inFiles = false
+params.reads = false
+params.fasta = false
+
 params.project = "cegs"
-build_index = false
 params.outdir = './methylpy'
 params.umeth = "ChrC:"
 params.file_ext = "sra"
@@ -140,28 +141,19 @@ if(params.pbat){
 /*
  * Create a channel for input read files
  */
-inFiles = Channel.from(params.inFiles)
-                 .splitCsv(sep: ';', header: true)
 
-
-if ( params.fasta && params.aligner == 'methylpy' ){
-  genome = file(params.fasta)
-  reffol = genome.parent
-  refid = genome.baseName
-  if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
-  methylpy_indices = Channel
-  .fromPath( "$reffol/${refid}_methylpy/${refid}*" )
-  .ifEmpty { build_index = true }
-  .subscribe onComplete: { checked_genome_index = true }
-}
 num_files = 1
 if ( params.file_ext == 'fastq' ){
-  num_files = params.singleEnd ? 1 : 2
+   num_files = params.singleEnd ? 1 : 2
 }
-Channel
-    .fromFilePairs( params.reads, size: num_files)
-    .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-    .into { read_files_processing }
+read_files_processing = Channel
+     .fromFilePairs( params.reads, size: num_files )
+     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
+
+read_genomes_processing = Channel
+      .fromPath( params.fasta)
+      .ifEmpty { exit 1, "Cannot find any reference fasta files in the given paths."}
+
 
 log.info "=================================================="
 log.info " nf-core/methylseq : Bisulfite-Seq Best Practice v${params.version}"
@@ -219,7 +211,18 @@ log.info "========================================="
 
 // PREPROCESSING - Build methylpy genome index
 
-if (build_index == true && params.aligner == 'methylpy'){
+if ( params.fasta && params.aligner == 'methylpy' ){
+  genome = file(params.fasta)
+  reffol = genome.parent
+  refid = genome.baseName
+  if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
+  methylpy_indices = Channel
+  .fromPath( "$reffol/${refid}_methylpy/${refid}*" )
+  .ifEmpty { build_index = true }
+  .subscribe onComplete: { checked_genome_index = true }
+}
+
+if (params.aligner == 'methylpy'){
   process makeMethylpyIndex {
     publishDir path: "${reffol}", mode: 'copy',
             saveAs: {filename -> filename.indexOf(".fai") > 0 ? "$filename" : "${refid}_methylpy/$filename"}
@@ -238,9 +241,6 @@ if (build_index == true && params.aligner == 'methylpy'){
     methylpy build-reference --input-files ${genome} --output-prefix ${refid} --bowtie2 True
     """
   }
-} else if (checked_genome_index == true){
-  genome_index = Channel.fromPath("${reffol}/${refid}.fasta.fai")
-  built_methylpy_index = Channel.fromPath("${reffol}/${refid}_methylpy/${refid}*")
 }
 
 /*
