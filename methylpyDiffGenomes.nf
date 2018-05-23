@@ -151,7 +151,7 @@ read_files_processing = Channel
      .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
 
 read_genomes_processing = Channel
-      .fromPath( params.fasta)
+      .fromPath( params.fasta )
       .ifEmpty { exit 1, "Cannot find any reference fasta files in the given paths."}
 
 
