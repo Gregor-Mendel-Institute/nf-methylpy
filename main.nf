@@ -30,6 +30,7 @@ params.umeth = "ChrC:"
 params.fasta = false
 params.file_ext = "bam"  // please change this accordingly..
 params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
+params.snpcall = false
 
 params.name = false
 params.clusterOptions = false
@@ -442,12 +443,13 @@ if(params.aligner == 'methylpy'){
 
     input:
     set val(name), file(reads) from trimmed_reads
+    file fasta
     file(meth_index) from built_methylpy_index.collect()
     file(meth_genome_index) from genome_index.collect()
 
     output:
-    set val(name), file("*processed_reads_no_clonal.bam") into aligned_bam
-    set val(name), file("allc_*tsv.gz") into allc
+    set val(name), file("*processed_reads_no_clonal.bam") into bam_aligned
+    set val(name), file("allc_*tsv.gz*") into allc
     set val(name), file("conversion_rate_${prefix}.txt") into conv_rate
 
     script:
@@ -455,17 +457,23 @@ if(params.aligner == 'methylpy'){
         prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
         """
         export TMPDIR="${params.tmpdir}"
-        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
         """
     } else {
         prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
         """
         export TMPDIR="${params.tmpdir}"
-        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
         """
     }
+  }
+
+  if (params.snpcall) {
+    bam_aligned.into { bams_index ; bams_snpcall }
+  } else {
+    bams_index = bam_aligned
   }
 
   process bam_index {
@@ -473,7 +481,7 @@ if(params.aligner == 'methylpy'){
     publishDir "${params.outdir}/alignedBams", mode: 'copy'
 
     input:
-    set val(name), file(bam) from aligned_bam
+    set val(name), file(bam) from bams_index
 
     output:
     set val(name), file("*processed_reads_no_clonal.bam.bai") into aligned_bam_index
@@ -486,6 +494,85 @@ if(params.aligner == 'methylpy'){
 
 }
 
+/*
+SNP calling from the methylpy
+*/
+if (params.snpcall){
+
+  process add_readgroups {
+    tag "$name"
+
+    input:
+    set val(name), file(bam) from bams_snpcall
+
+    output:
+    set val(name), file("*.modified.bam") into modifiedbam
+    set val(name), file("*.modified.bam.bai") into modifiedbam_index
+
+    script:
+    prefix = bam.toString() - ~/(_trimmed)?(_val_1)?(_processed_reads_no_clonal.bam)?$/
+
+    """
+    java -Djava.io.tmpdir=${params.tmpdir} -jar \${EBROOTPICARD}/picard.jar AddOrReplaceReadGroups INPUT=$bam OUTPUT=${prefix}.modified.bam ID=${prefix} LB=${prefix} PL=illumina PU=none SM=${prefix}
+    samtools index ${prefix}.modified.bam
+    """
+  }
+
+
+  process do_realignindel {
+    tag "$name"
+
+    input:
+    set val(name), file(bam) from modifiedbam
+    set val(name), file(bam_index) from modifiedbam_index
+
+    output:
+    set val(name), file("*realignedBam.bam") into realignedbam
+    set val(name), file("*realignedBam.bam.bai") into realignedbam_index
+
+    script:
+    prefix = bam.toString() - ~/(.modified.bam)?(\._processed_reads_no_clonal.bam)?$/
+    """
+    java -Djava.io.tmpdir=${params.tmpdir} -jar \$EBROOTGATK/GenomeAnalysisTK.jar -T RealignerTargetCreator -R $reffol/${refid}.fasta -I $bam -o ${prefix}.forIndelRealigner.intervals
+    java -Djava.io.tmpdir=${params.tmpdir} -jar \$EBROOTGATK/GenomeAnalysisTK.jar -T IndelRealigner -R $reffol/${refid}.fasta -I $bam -targetIntervals ${prefix}.forIndelRealigner.intervals -o ${prefix}.realignedBam.bam
+    samtools index ${prefix}.realignedBam.bam
+    """
+  }
+
+  process do_snpcall {
+    tag "$name"
+
+    input:
+    set val(name), file(bam) from realignedbam
+    set val(name), file(bam_index) from realignedbam_index
+
+    output:
+    set val(name), file("*vcf") into vcffile
+
+    script:
+    prefix = bam.toString() - ~/(.realignedBam.bam)?(\.modified.bam)?$/
+    """
+    java -Djava.io.tmpdir=${params.tmpdir} -jar \$EBROOTGATK/GenomeAnalysisTK.jar -T HaplotypeCaller -R $reffol/${refid}.fasta -I ${prefix}.realignedBam.bam --genotyping_mode DISCOVERY -o ${prefix}.vcf -nct ${task.cpus}
+    """
+  }
+
+  process get_snps_from_vcf {
+    tag "$name"
+    publishDir "${params.outdir}/vcfbed", mode: 'copy'
+
+    input:
+    set val(name), file(vcf) from vcffile
+
+    output:
+    set val(name), file("*snpvcf.bed") into snpbed
+
+    script:
+    prefix = vcf.toString() - ~/(\.vcf)?(\.g.vcf.gz)?(.realignedBam.bam)?(\.vcf.gz)?$/
+    """
+    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ {print \$1 "\t" \$2 "\t" \$5}'  > ${prefix}.snpvcf.bed
+    """
+  }
+}
 
 
 /*
