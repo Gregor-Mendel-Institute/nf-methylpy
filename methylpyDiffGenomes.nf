@@ -16,13 +16,13 @@
  * SET UP CONFIGURATION VARIABLES
  */
 
-params.reads = false
-params.fasta = false
+params.inputfiles = false
+params.outdir = './methylpy'
 
 params.project = "cegs"
-params.outdir = './methylpy'
+params.aligner = "methylpy"
+if( params.aligner != "methylpy" ) exit 1, "This pipeline has been written only for methylpy, please choose methylpy as aligner"
 params.umeth = "ChrC:"
-params.file_ext = "sra"
 params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
 
 params.name = false
@@ -141,29 +141,23 @@ if(params.pbat){
 /*
  * Create a channel for input read files
  */
+input_genomes = Channel
+    .fromPath( params.inputfiles )
+    .ifEmpty { exit 1, "Provide a tab separated table indicating the read pairs and reference fasta."}
+    .splitCsv(sep: '\t')
+    .unique{ row -> [row[0], row[1]] }
 
-num_files = 1
-if ( params.file_ext == 'fastq' ){
-   num_files = params.singleEnd ? 1 : 2
-}
-read_files_processing = Channel
-     .fromFilePairs( params.reads, size: num_files )
-     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --singleEnd on the command line." }
-
-read_genomes_processing = Channel
-      .fromPath( params.fasta )
-      .ifEmpty { exit 1, "Cannot find any reference fasta files in the given paths."}
-
+input_reads = Channel
+  .fromPath( params.inputfiles )
+  .splitCsv(sep: '\t')
 
 log.info "=================================================="
 log.info " nf-core/methylseq : Bisulfite-Seq Best Practice v${params.version}"
 log.info "=================================================="
 def summary = [:]
 summary['Run Name']       = custom_runName ?: workflow.runName
-summary['Reads']          = params.reads
+summary['Input file']     = params.inputfiles
 summary['Aligner']        = params.aligner
-summary['Data Type']      = params.singleEnd ? 'Single-End' : 'Paired-End'
-summary['Genome']         = params.genome ?: genome
 if(params.bismark_index) summary['Bismark Index'] = params.bismark_index
 if(params.bwa_meth_index) summary['BWA-Meth Index'] = "${params.bwa_meth_index}*"
 else if(params.fasta)    summary['Fasta Ref'] = params.fasta
@@ -210,159 +204,106 @@ log.info "========================================="
 
 
 // PREPROCESSING - Build methylpy genome index
+process makeMethylpyIndex {
+  tag { "$accID" }
+  storeDir "$reffol/${refid}_methylpy"
 
-if ( params.fasta && params.aligner == 'methylpy' ){
-  genome = file(params.fasta)
+  input:
+  set val(accID), genome_file, reads from input_genomes
+
+  output:
+  set val(accID), genome, file("${refid}*") into methylpy_indices
+
+  script:
+  genome = file(genome_file)
   reffol = genome.parent
   refid = genome.baseName
-  if( !genome.exists() ) exit 1, "Reference fasta file not found: ${params.fasta}"
-  methylpy_indices = Channel
-  .fromPath( "$reffol/${refid}_methylpy/${refid}*" )
-  .ifEmpty { build_index = true }
-  .subscribe onComplete: { checked_genome_index = true }
+  f_ref = "$reffol/${refid}_methylpy/${refid}_f"
+  r_ref = "$reffol/${refid}_methylpy/${refid}_r"
+  """
+  samtools faidx ${genome}
+  methylpy build-reference --input-files ${genome} --output-prefix ${refid} --bowtie2 True
+  """
 }
 
-if (params.aligner == 'methylpy'){
-  process makeMethylpyIndex {
-    publishDir path: "${reffol}", mode: 'copy',
-            saveAs: {filename -> filename.indexOf(".fai") > 0 ? "$filename" : "${refid}_methylpy/$filename"}
-
-    input:
-    file genome
-    checked_genome_index
-
-    output:
-    file "${genome}.fai" into genome_index
-    file "${refid}*" into built_methylpy_index
-
-    script:
-    """
-    samtools faidx ${genome}
-    methylpy build-reference --input-files ${genome} --output-prefix ${refid} --bowtie2 True
-    """
-  }
-}
-
-/*
-* PREPROCESSING - Build Bismark index
-*/
-if(!params.bismark_index && params.fasta && params.aligner == 'bismark'){
-    process makeBismarkIndex {
-        publishDir path: { params.saveReference ? "${params.outdir}/reference_genome" : params.outdir },
-                   saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta from fasta
-
-        output:
-        file "BismarkIndex" into bismark_index
-
-        script:
-        """
-        mkdir BismarkIndex
-        cp $fasta BismarkIndex/
-        bismark_genome_preparation BismarkIndex
-        """
-    }
-}
-
-
-/*
- * PREPROCESSING - Build bwa-mem index
- */
-if(!params.bwa_meth_index && params.fasta && params.aligner == 'bwameth'){
-    process makeBwaMemIndex {
-        tag fasta
-        publishDir path: "${params.outdir}/reference_genome", saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta from fasta
-
-        output:
-        file "${fasta}.bwameth.c2t.bwt" into bwa_meth_index
-        file "${fasta}*" into bwa_meth_indices
-
-        script:
-        """
-        bwameth.py index $fasta
-        """
-    }
-}
-
-/*
- * PREPROCESSING - Index Fasta file
- */
-if(!params.fasta_index && params.fasta && params.aligner == 'bwameth'){
-    process makeFastaIndex {
-        tag fasta
-        publishDir path: "${params.outdir}/reference_genome", saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta
-
-        output:
-        file "${fasta}.fai" into fasta_index
-
-        script:
-        """
-        samtools faidx $fasta
-        """
-    }
-}
 
 // Step 0, preprocessing input read files
-
 if (params.file_ext == "fastq"){
-  read_files_processing.into { read_files_fastqc; read_files_trimming }
+  input_reads.into { read_files_fastqc; read_files_trimming }
 } else {
+  process identify_libraries{
+    tag { "${accID}_${read_files.baseName}" }
+
+    input:
+    set val(accID), genome, reads from input_reads
+
+    output:
+    set val(accID), reads, stdout into read_files_processing
+
+    script:
+    read_files = file(reads)
+    file_ext = read_files.getExtension()
+    if (file_ext == "sra"){
+      """
+      fastq-dump -I -X 1 -Z --split-spot $read_files  | awk ' NR % 2 == 1 {print substr(\$1,length(\$1),1) } ' | uniq | wc -l
+      """
+      } else if (file_ext == "bam"){
+        """
+        (samtools view -h $read_files | head -n 100 | samtools view -f 0x1 | wc -l | awk '{print \$0 + 1 }' ) || true
+        """
+    }
+  }
+
   process reads_preprocess {
-    tag { params.reads }
+    tag { "${accID}_${read_files.baseName}" }
     storeDir "${params.tmpdir}/rawreads"
 
     input:
-    set val(name), file(reads) from read_files_processing
+    set val(accID), reads, val(library_id) from read_files_processing
 
     output:
-    set val(name), file("${prefix}*fastq") into read_files_fastqc
-    set val(name), file("${prefix}*fastq") into read_files_trimming
+    set val(accID), file("${prefix}*fastq"), val(library_id) into read_files_fastqc
+    set val(accID), file("${prefix}*fastq"), val(library_id) into read_files_trimming
 
     script:
-    if (params.singleEnd) {
-      prefix = reads.toString() - ~/(\.sra)?(\.bam)?$/
-      if (reads.getExtension() == "sra") {
+    read_files = file(reads)
+    file_ext = read_files.getExtension()
+    prefix = read_files.baseName.toString() - ~/(\.sra)?(\.bam)?$/
+    if (library_id == 1) {
+      if (file_ext == "sra") {
         """
-        fastq-dump $reads
+        fastq-dump $read_files
         """
-      } else if (reads.getExtension() == "bam") {
+      } else if (file_ext == "bam") {
         """
-        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${prefix}.fastq VALIDATION_STRINGENCY=LENIENT
+        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$read_files FASTQ=${prefix}.fastq VALIDATION_STRINGENCY=LENIENT
         """
       }
     } else {
-      prefix = reads.toString() - ~/(\.sra)?(\.bam)?$/
-      if (reads[0].getExtension() == "sra") {
+      if (file_ext == "sra") {
         """
-        fastq-dump --split-files $reads
+        fastq-dump --split-files $read_files
         """
-      } else if (reads.getExtension() == "bam") {
+      } else if (file_ext == "bam") {
         """
-        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${prefix}_1.fastq SECOND_END_FASTQ=${prefix}_2.fastq VALIDATION_STRINGENCY=LENIENT
+        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$read_files FASTQ=${prefix}_1.fastq SECOND_END_FASTQ=${prefix}_2.fastq VALIDATION_STRINGENCY=LENIENT
         """
       }
     }
   }
 }
+
 
 /*
  * STEP 1 - FastQC
  */
 process fastqc {
-    tag "$name"
+    tag { "${accID}_$reads" }
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
 
     input:
-    set val(name), file(reads) from read_files_fastqc
+    set val(accID), file(reads), val(library_id) from read_files_fastqc
 
     output:
     file '*_fastqc.{zip,html}' into fastqc_results
@@ -381,7 +322,7 @@ if(params.notrim){
     trimgalore_results = Channel.from(false)
 } else {
     process trim_galore {
-        tag "$name"
+        tag { "${accID}_$reads" }
         publishDir "${params.outdir}/trim_galore", mode: 'copy',
             saveAs: {filename ->
                 if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
@@ -390,10 +331,10 @@ if(params.notrim){
             }
 
         input:
-        set val(name), file(reads) from read_files_trimming
+        set val(accID), file(reads), val(library_id) from read_files_trimming
 
         output:
-        set val(name), file('*fq.gz') into trimmed_reads
+        set val(accID), file('*fq.gz'), val(library_id) into trimmed_reads
         file "*trimming_report.txt" into trimgalore_results
         file "*_fastqc.{zip,html}" into trimgalore_fastqc_reports
 
@@ -418,426 +359,61 @@ if(params.notrim){
 }
 
 // 3 - align with methylpy
+input_reads_methylpy = trimmed_reads
+    .combine( methylpy_indices , by: 0)
 
-if(params.aligner == 'methylpy'){
-  process methylpy_align {
-    tag "$name"
-    publishDir "${params.outdir}", mode: 'copy',
-        saveAs: {filename ->
-            if (filename.indexOf(".bam") > 0) "alignedBams/$filename"
-            else if (filename =~ '^allc' ) "allc/$filename"
-            else if (filename =~ '^conversion' ) "info/$filename"
-          }
+process methylpy_align {
+  tag { "${accID}_$reads" }
+  publishDir "${params.outdir}", mode: 'copy',
+      saveAs: {filename ->
+          if (filename.indexOf(".bam") > 0) "alignedBams/$filename"
+          else if (filename =~ '^allc' ) "allc/$filename"
+          else if (filename =~ '^conversion' ) "info/$filename"
+        }
 
-    input:
-    set val(name), file(reads) from trimmed_reads
-    file(meth_index) from built_methylpy_index
-    file(meth_genome_index) from genome_index
+  input:
+  set val(accID), file(reads), val(library_id), file(genome), file(meth_index) from input_reads_methylpy
 
-    output:
-    file "*processed_reads_no_clonal.bam" into aligned_bam
-    file "allc_*tsv.gz" into allc
-    file "conversion_rate_${prefix}.txt" into conv_rate
+  output:
+  set val(accID), file("*processed_reads_no_clonal.bam") into bam_aligned
+  set val(accID), file("allc_*tsv.gz*") into allc
+  set val(accID), file("conversion_rate_${prefix}.txt") into conv_rate
 
-    script:
-    if (params.singleEnd) {
-        prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
-        """
-        methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} > log.txt 2>&1
-        cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
-        """
-    } else {
-        prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
-        """
-        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref $reffol/${refid}_methylpy/${refid}_f  --reverse-ref $reffol/${refid}_methylpy/${refid}_r  --ref-fasta  $reffol/${refid}.fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard ${EBROOTPICARD}  --binom-test True  --unmethylated-control $params.umeth > log.txt 2>&1
-        cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
-        """
-    }
+  script:
+  reffol = genome.parent
+  refid = genome.baseName
+  if (library_id == 1) {
+      prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
+      """
+      export TMPDIR="${params.tmpdir}"
+      methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+      cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
+      """
+  } else {
+      prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
+      """
+      export TMPDIR="${params.tmpdir}"
+      methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+      cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
+      """
   }
-
-  process bam_index {
-    tag "$name"
-    publishDir "${params.outdir}/alignedBams", mode: 'copy'
-
-    input:
-    file aligned_bam from aligned_bam
-
-    output:
-    file "*processed_reads_no_clonal.bam.bai" into aligned_bam_index
-
-    script:
-    """
-    samtools index $aligned_bam
-    """
-  }
-
 }
 
+process bam_index {
+  tag { "${accID}_$bam" }
+  publishDir "${params.outdir}/alignedBams", mode: 'copy'
 
+  input:
+  set val(accID), file(bam) from bam_aligned
 
-/*
- * STEP 3.1 - align with Bismark
- */
-if(params.aligner == 'bismark'){
-    process bismark_align {
-        tag "$name"
-        publishDir "${params.outdir}/bismark_alignments", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf(".fq.gz") > 0) "unmapped/$filename"
-                else if (filename.indexOf(".bam") == -1) "logs/$filename"
-                else params.saveAlignedIntermediates || params.nodedup || params.rrbs ? filename : null
-            }
+  output:
+  set val(accID), file("*processed_reads_no_clonal.bam.bai") into aligned_bam_index
 
-        input:
-        set val(name), file(reads) from trimmed_reads
-        file index from bismark_index.collect()
-
-        output:
-        file "*.bam" into bam, bam_2
-        file "*report.txt" into bismark_align_log_1, bismark_align_log_2, bismark_align_log_3
-        if(params.unmapped){ file "*.fq.gz" into bismark_unmapped }
-
-        script:
-        pbat = params.pbat ? "--pbat" : ''
-        non_directional = params.single_cell || params.zymo || params.non_directional ? "--non_directional" : ''
-        unmapped = params.unmapped ? "--unmapped" : ''
-        mismatches = params.relaxMismatches ? "--score_min L,0,-${params.numMismatches}" : ''
-        multicore = ''
-        if (task.cpus){
-            // Numbers based on recommendation by Felix for a typical mouse genome
-            if(params.single_cell || params.zymo || params.non_directional){
-                cpu_per_multicore = 5
-                mem_per_multicore = (18.GB).toBytes()
-            } else {
-                cpu_per_multicore = 3
-                mem_per_multicore = (13.GB).toBytes()
-            }
-            // How many multicore splits can we afford with the cpus we have?
-            ccore = ((task.cpus as int) / cpu_per_multicore) as int
-            // Check that we have enough memory, assuming 13GB memory per instance (typical for mouse alignment)
-            try {
-                tmem = (task.memory as nextflow.util.MemoryUnit).toBytes()
-                mcore = (tmem / mem_per_multicore) as int
-                ccore = Math.min(ccore, mcore)
-            } catch (all) {
-                log.debug "Not able to define bismark align multicore based on available memory"
-            }
-            if(ccore > 1){
-              multicore = "--multicore $ccore"
-            }
-        }
-        if (params.singleEnd) {
-            """
-            bismark \\
-                --bam $pbat $non_directional $unmapped $mismatches $multicore \\
-                --genome $index \\
-                $reads
-            """
-        } else {
-            """
-            bismark \\
-                --bam $pbat $non_directional $unmapped $mismatches $multicore \\
-                --genome $index \\
-                -1 ${reads[0]} \\
-                -2 ${reads[1]}
-            """
-        }
-    }
-
-    /*
-     * STEP 4 - Bismark deduplicate
-     */
-    if (params.nodedup || params.rrbs) {
-        bam.into { bam_dedup; bam_dedup_qualimap }
-        bismark_dedup_log_1 = Channel.from(false)
-        bismark_dedup_log_2 = Channel.from(false)
-        bismark_dedup_log_3 = Channel.from(false)
-    } else {
-        process bismark_deduplicate {
-            tag "${bam.baseName}"
-            publishDir "${params.outdir}/bismark_deduplicated", mode: 'copy',
-                saveAs: {filename -> filename.indexOf(".bam") == -1 ? "logs/$filename" : "$filename"}
-
-            input:
-            file bam
-
-            output:
-            file "${bam.baseName}.deduplicated.bam" into bam_dedup, bam_dedup_qualimap
-            file "${bam.baseName}.deduplication_report.txt" into bismark_dedup_log_1, bismark_dedup_log_2, bismark_dedup_log_3
-
-            script:
-            if (params.singleEnd) {
-                """
-                deduplicate_bismark -s --bam $bam
-                """
-            } else {
-                """
-                deduplicate_bismark -p --bam $bam
-                """
-            }
-        }
-    }
-
-    /*
-     * STEP 5 - Bismark methylation extraction
-     */
-    process bismark_methXtract {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/bismark_methylation_calls", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf("splitting_report.txt") > 0) "logs/$filename"
-                else if (filename.indexOf("M-bias") > 0) "m-bias/$filename"
-                else if (filename.indexOf(".cov") > 0) "methylation_coverage/$filename"
-                else if (filename.indexOf("bedGraph") > 0) "bedGraph/$filename"
-                else "methylation_calls/$filename"
-            }
-
-        input:
-        file bam from bam_dedup
-
-        output:
-        file "${bam.baseName}_splitting_report.txt" into bismark_splitting_report_1, bismark_splitting_report_2, bismark_splitting_report_3
-        file "${bam.baseName}.M-bias.txt" into bismark_mbias_1, bismark_mbias_2, bismark_mbias_3
-        file '*.{png,gz}' into bismark_methXtract_results
-
-        script:
-        comprehensive = params.comprehensive ? '--comprehensive --merge_non_CpG' : ''
-        multicore = ''
-        if (task.cpus){
-            // Numbers based on Bismark docs
-            ccore = ((task.cpus as int) / 10) as int
-            if(ccore > 1){
-              multicore = "--multicore $ccore"
-            }
-        }
-        buffer = ''
-        if (task.memory){
-            mbuffer = (task.memory as nextflow.util.MemoryUnit) - 2.GB
-            // only set if we have more than 6GB available
-            if(mbuffer.compareTo(4.GB) == 1){
-              buffer = "--buffer_size ${mbuffer.toGiga()}G"
-            }
-        }
-        if (params.singleEnd) {
-            """
-            bismark_methylation_extractor $comprehensive \\
-                $multicore $buffer \\
-                --bedGraph \\
-                --counts \\
-                --gzip \\
-                -s \\
-                --report \\
-                $bam
-            """
-        } else {
-            """
-            bismark_methylation_extractor $comprehensive \\
-                $multicore $buffer \\
-                --ignore_r2 2 \\
-                --ignore_3prime_r2 2 \\
-                --bedGraph \\
-                --counts \\
-                --gzip \\
-                -p \\
-                --no_overlap \\
-                --report \\
-                $bam
-            """
-        }
-    }
-
-
-    /*
-     * STEP 6 - Bismark Sample Report
-     */
-    process bismark_report {
-        tag "$name"
-        publishDir "${params.outdir}/bismark_reports", mode: 'copy'
-
-        input:
-        file bismark_align_log_1
-        file bismark_dedup_log_1
-        file bismark_splitting_report_1
-        file bismark_mbias_1
-
-        output:
-        file '*{html,txt}' into bismark_reports_results
-
-        script:
-        name = bismark_align_log_1.toString() - ~/(_R1)?(_trimmed|_val_1).+$/
-        """
-        bismark2report \\
-            --alignment_report $bismark_align_log_1 \\
-            --dedup_report $bismark_dedup_log_1 \\
-            --splitting_report $bismark_splitting_report_1 \\
-            --mbias_report $bismark_mbias_1
-        """
-    }
-
-    /*
-     * STEP 7 - Bismark Summary Report
-     */
-    process bismark_summary {
-        publishDir "${params.outdir}/bismark_summary", mode: 'copy'
-
-        input:
-        file ('*') from bam_2.collect()
-        file ('*') from bismark_align_log_2.collect()
-        file ('*') from bismark_dedup_log_2.collect()
-        file ('*') from bismark_splitting_report_2.collect()
-        file ('*') from bismark_mbias_2.collect()
-
-        output:
-        file '*{html,txt}' into bismark_summary_results
-
-        script:
-        """
-        bismark2summary
-        """
-    }
-} // End of bismark processing block
-else {
-    bismark_align_log_3 = Channel.from(false)
-    bismark_dedup_log_3 = Channel.from(false)
-    bismark_splitting_report_3 = Channel.from(false)
-    bismark_mbias_3 = Channel.from(false)
-    bismark_reports_results = Channel.from(false)
-    bismark_summary_results = Channel.from(false)
+  script:
+  """
+  samtools index $bam
+  """
 }
-
-
-/*
- * Process with bwa-mem and assorted tools
- */
-if(params.aligner == 'bwameth'){
-    process bwamem_align {
-        tag "$name"
-        publishDir "${params.outdir}/bwa-mem_alignments", mode: 'copy',
-            saveAs: { fn -> params.saveAlignedIntermediates ? fn : null }
-
-        input:
-        set val(name), file(reads) from trimmed_reads
-        file bwa_meth_indices from bwa_meth_indices.collect()
-
-        output:
-        file '*.bam' into bam_aligned
-
-        script:
-        fasta = bwa_meth_indices[0].toString() - '.bwameth' - '.c2t' - '.amb' - '.ann' - '.bwt' - '.pac' - '.sa'
-        prefix = reads[0].toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
-        """
-        bwameth.py \\
-            --threads ${task.cpus} \\
-            --reference $fasta \\
-            $reads | samtools view -bS - > ${prefix}.bam
-        """
-    }
-
-
-    /*
-     * STEP 4.- samtools flagstat on samples
-     */
-    process samtools_sort_index_flagstat {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/bwa-mem_alignments", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf(".txt") > 0) "logs/$filename"
-                else if (params.saveAlignedIntermediates || params.nodedup || params.rrbs) filename
-                else null
-            }
-
-        input:
-        file bam from bam_aligned
-
-        output:
-        file "${bam.baseName}.sorted.bam" into bam_sorted
-        file "${bam.baseName}.sorted.bam.bai" into bam_index
-        file "${bam.baseName}_flagstat.txt" into flagstat_results
-        file "${bam.baseName}_stats.txt" into samtools_stats_results
-
-        script:
-        """
-        samtools sort \\
-            $bam \\
-            -m ${task.memory.toBytes() / task.cpus} \\
-            -@ ${task.cpus} \\
-            > ${bam.baseName}.sorted.bam
-        samtools index ${bam.baseName}.sorted.bam
-        samtools flagstat ${bam.baseName}.sorted.bam > ${bam.baseName}_flagstat.txt
-        samtools stats ${bam.baseName}.sorted.bam > ${bam.baseName}_stats.txt
-        """
-    }
-
-    /*
-     * STEP 5 - Mark duplicates
-     */
-    if (params.nodedup || params.rrbs) {
-        bam_sorted.into { bam_md; bam_dedup_qualimap }
-        bam_index.set { bam_md_bai }
-        picard_results = Channel.from(false)
-    } else {
-        process markDuplicates {
-            tag "${bam.baseName}"
-            publishDir "${params.outdir}/bwa-mem_markDuplicates", mode: 'copy',
-                saveAs: {filename -> filename.indexOf(".bam") == -1 ? "logs/$filename" : "$filename"}
-
-            input:
-            file bam from bam_sorted
-
-            output:
-            file "${bam.baseName}.markDups.bam" into bam_md, bam_dedup_qualimap
-            file "${bam.baseName}.markDups.bam.bai" into bam_md_bai
-            file "${bam.baseName}.markDups_metrics.txt" into picard_results
-
-            script:
-            """
-            picard MarkDuplicates \\
-                INPUT=$bam \\
-                OUTPUT=${bam.baseName}.markDups.bam \\
-                METRICS_FILE=${bam.baseName}.markDups_metrics.txt \\
-                REMOVE_DUPLICATES=false \\
-                ASSUME_SORTED=true \\
-                PROGRAM_RECORD_ID='null' \\
-                VALIDATION_STRINGENCY=LENIENT
-            samtools index ${bam.baseName}.markDups.bam
-            """
-        }
-    }
-
-    /*
-     * STEP 6 - extract methylation with MethylDackel
-     */
-    process methyldackel {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/MethylDackel", mode: 'copy'
-
-        input:
-        file bam from bam_md
-        file bam_index from bam_md_bai
-        file fasta from fasta
-        file fasta_index from fasta_index
-
-        output:
-        file '*' into methyldackel_results
-
-        script:
-        allcontexts = params.comprehensive ? '--CHG --CHH' : ''
-        mindepth = params.mindepth > 0 ? "--minDepth ${params.mindepth}" : ''
-        ignoreFlags = params.ignoreFlags ? "--ignoreFlags" : ''
-        """
-        MethylDackel extract $allcontexts $ignoreFlags $mindepth $fasta $bam
-        MethylDackel mbias $allcontexts $ignoreFlags $fasta $bam ${bam.baseName}
-        """
-    }
-
-} // end of bwa-meth if block
-else {
-    flagstat_results = Channel.from(false)
-    samtools_stats_results = Channel.from(false)
-    picard_results = Channel.from(false)
-    methyldackel_results = Channel.from(false)
-}
-
 
 /*
  * STEP 8 - Qualimap
