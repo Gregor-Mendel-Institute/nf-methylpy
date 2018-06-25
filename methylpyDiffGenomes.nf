@@ -9,10 +9,13 @@
  #### Authors
  Phil Ewels <phil.ewels@scilifelab.se>
 ----------------------------------------------------------------------------------------
-*/
 
 
-/*
+RUN:
+
+nextflow run ~/mygit/methylseq/methylpyDiffGenomes.nf --inputfiles input_csv --outdir methylpy
+
+
  * SET UP CONFIGURATION VARIABLES
  */
 
@@ -247,10 +250,10 @@ if (params.file_ext == "fastq"){
       """
       fastq-dump -I -X 1 -Z --split-spot $read_files  | awk ' NR % 2 == 1 {print substr(\$1,length(\$1),1) } ' | uniq | wc -l
       """
-      } else if (file_ext == "bam"){
-        """
-        (samtools view -h $read_files | head -n 100 | samtools view -f 0x1 | wc -l | awk '{print \$0 + 1 }' ) || true
-        """
+    } else if (file_ext == "bam"){
+      """
+      (samtools view -h $read_files | head -n 100 | samtools view -f 0x1 | wc -l | awk '{print \$0 + 1 }' ) || true
+      """
     }
   }
 
