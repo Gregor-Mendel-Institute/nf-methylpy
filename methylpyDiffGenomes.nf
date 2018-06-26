@@ -21,6 +21,7 @@ nextflow run ~/mygit/methylseq/methylpyDiffGenomes.nf --inputfiles input_csv --o
 
 params.inputfiles = false
 params.outdir = './methylpy'
+params.file_ext = false
 
 params.project = "cegs"
 params.aligner = "methylpy"
@@ -62,31 +63,6 @@ if( workflow.profile == 'standard'){
                   "============================================================"
     }
 }
-
-// Validate inputs
-if (params.aligner == 'methylpy'){
-  "Running methylpy"
-} else if (params.aligner != 'bismark' && params.aligner != 'bwameth'){
-    exit 1, "Invalid aligner option: ${params.aligner}. Valid options: 'bismark', 'bwameth'"
-}
-if( params.bismark_index && params.aligner == 'bismark' ){
-    bismark_index = Channel
-        .fromPath(params.bismark_index)
-        .ifEmpty { exit 1, "Bismark index not found: ${params.bismark_index}" }
-}
-else if( params.bwa_meth_index && params.aligner == 'bwameth' ){
-    bwa_meth_indices = Channel
-        .fromPath( "${params.bwa_meth_index}*" )
-        .ifEmpty { exit 1, "bwa-meth index not found: ${params.bwa_meth_index}" }
-}
-else if( params.fasta_index && params.aligner == 'bwameth' ){
-    fasta_index = file(params.fasta_index)
-    if( !fasta_index.exists() ) exit 1, "Fasta index file not found: ${params.fasta_index}"
-}
-else if( params.aligner == 'bwameth') {
-    exit 1, "No Fasta reference specified! This is required by MethylDackel."
-}
-multiqc_config = file(params.multiqc_config)
 
 // Validate inputs
 if( workflow.profile == 'uppmax' || workflow.profile == 'uppmax_devel' ){
@@ -161,9 +137,6 @@ def summary = [:]
 summary['Run Name']       = custom_runName ?: workflow.runName
 summary['Input file']     = params.inputfiles
 summary['Aligner']        = params.aligner
-if(params.bismark_index) summary['Bismark Index'] = params.bismark_index
-if(params.bwa_meth_index) summary['BWA-Meth Index'] = "${params.bwa_meth_index}*"
-else if(params.fasta)    summary['Fasta Ref'] = params.fasta
 if(params.rrbs) summary['RRBS Mode'] = 'On'
 if(params.relaxMismatches) summary['Mismatch Func'] = "L,0,-${params.numMismatches} (Bismark default = L,0,-0.2)"
 if(params.notrim)       summary['Trimming Step'] = 'Skipped'
