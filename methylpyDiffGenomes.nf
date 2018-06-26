@@ -262,17 +262,18 @@ if (params.file_ext == "fastq"){
     storeDir "${params.tmpdir}/rawreads"
 
     input:
-    set val(accID), reads, val(library_id) from read_files_processing
+    set val(accID), reads, library_id from read_files_processing
 
     output:
-    set val(accID), file("${prefix}*fastq"), val(library_id) into read_files_fastqc
-    set val(accID), file("${prefix}*fastq"), val(library_id) into read_files_trimming
+    set val(accID), file("${prefix}*fastq"), val(library) into read_files_fastqc
+    set val(accID), file("${prefix}*fastq"), val(library) into read_files_trimming
 
     script:
     read_files = file(reads)
     file_ext = read_files.getExtension()
     prefix = read_files.baseName.toString() - ~/(\.sra)?(\.bam)?$/
-    if (library_id == 1) {
+    library = library_id.toInteger()
+    if (library == 1) {
       if (file_ext == "sra") {
         """
         fastq-dump $read_files
@@ -349,7 +350,7 @@ if(params.notrim){
         rrbs = params.rrbs ? "--rrbs" : ''
         illumina = params.illumina ? "--illumina" : ''
         non_directional = params.rrbs && params.non_directional ? "--non_directional" : ''
-        if (params.singleEnd) {
+        if (library_id == 1) {
             """
             trim_galore --fastqc --gzip $illumina $rrbs $c_r1 $tpc_r1 $reads
             """
