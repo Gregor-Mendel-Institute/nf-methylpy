@@ -392,6 +392,22 @@ process bam_index {
   """
 }
 
+process make_hdf5 {
+  tag { "${accID}_$allc" }
+  publishDir "${params.outdir}/hdf5", mode: 'copy'
+
+  input:
+  set val(accID), file(allc) from allc
+
+  output:
+  set val(accID), file("*hdf5") into hdf5_out
+
+  script:
+  """
+  bshap methylation_percentage -i $allc -a new -b Chr1,1,100 -o temp -v
+  """
+}
+
 /*
  * STEP 8 - Qualimap
 process qualimap {

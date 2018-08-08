@@ -495,6 +495,25 @@ if(params.aligner == 'methylpy'){
 }
 
 /*
+Make hdf5 files for the allc
+*/
+process make_hdf5 {
+  tag { "$name" }
+  publishDir "${params.outdir}/hdf5", mode: 'copy'
+
+  input:
+  set val(name), file(allc) from allc
+
+  output:
+  set val(name), file("*hdf5") into hdf5_out
+
+  script:
+  """
+  bshap methylation_percentage -i $allc -a new -b Chr1,1,100 -o temp -v
+  """
+}
+
+/*
 SNP calling from the methylpy
 */
 if (params.snpcall){
