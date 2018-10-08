@@ -449,7 +449,7 @@ if(params.aligner == 'methylpy'){
 
     output:
     set val(name), file("*processed_reads_no_clonal.bam") into bam_aligned
-    set val(name), file("allc_*tsv.gz*") into allc
+    set val(name), file("allc_*tsv.gz") into allc
     set val(name), file("conversion_rate_${prefix}.txt") into conv_rate
 
     script:
