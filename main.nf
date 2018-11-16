@@ -242,7 +242,7 @@ if (build_index == true && params.aligner == 'methylpy'){
 
     output:
     file "${genome}.fai" into genome_index
-    file "${refid}*" into built_methylpy_index
+    file "${refid}_*" into built_methylpy_index
 
     script:
     """
