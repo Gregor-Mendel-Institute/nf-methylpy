@@ -581,7 +581,7 @@ if (params.snpcall){
 
     script:
     """
-    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%GT][\t%AD]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ {print \$1 "\t" \$2 "\t" \$5 "\t" \$6}'  > ${prefix}.snpvcf.bed
+    bcftools query -f "%CHROM\t%POS\t%REF\t%ALT[\t%GT][\t%AD]\n" $vcf | awk '\$3 !~ /C|G/ && length(\$3) == 1 && length(\$4) == 1 && \$4 !~ /T/ {print \$1 "\t" \$2 "\t" \$5 "\t" \$6}'  > ${name}.snpvcf.bed
     """
   }
 }
