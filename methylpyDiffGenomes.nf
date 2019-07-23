@@ -208,6 +208,7 @@ if (params.file_ext == "fastq"){
   input_reads.into { read_files_fastqc; read_files_trimming }
 } else {
   process identify_libraries{
+    label 'env_picard_small'
     tag { "${accID}_${read_files.baseName}" }
 
     input:
@@ -233,6 +234,7 @@ if (params.file_ext == "fastq"){
   process reads_preprocess {
     tag { "${accID}_${read_files.baseName}" }
     storeDir "${params.tmpdir}/rawreads"
+    label 'env_picard_small'
 
     input:
     set val(accID), reads, library_id from read_files_processing
@@ -276,6 +278,7 @@ if (params.file_ext == "fastq"){
  */
 process fastqc {
     tag { "${accID}_$reads" }
+    label 'env_quality'
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
 
@@ -300,6 +303,7 @@ if(params.notrim){
 } else {
     process trim_galore {
         tag { "${accID}_$reads" }
+        label 'env_quality'
         publishDir "${params.outdir}/trim_galore", mode: 'copy',
             saveAs: {filename ->
                 if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
@@ -347,6 +351,7 @@ process methylpy_align {
           else if (filename =~ '^allc' ) "allc/$filename"
           else if (filename =~ '^conversion' ) "info/$filename"
         }
+  label 'env_methylpy'
 
   input:
   set val(accID), file(reads), val(library_id), file(genome), file(meth_index) from input_reads_methylpy
@@ -379,6 +384,7 @@ process methylpy_align {
 process bam_index {
   tag { "${accID}_$bam" }
   publishDir "${params.outdir}/alignedBams", mode: 'copy'
+  label 'env_picard_small'
 
   input:
   set val(accID), file(bam) from bam_aligned
@@ -395,6 +401,7 @@ process bam_index {
 process make_hdf5 {
   tag { "${accID}_$allc" }
   publishDir "${params.outdir}/hdf5", mode: 'copy'
+  label 'env_pybshap'
 
   input:
   set val(accID), file(allc) from allc
@@ -407,201 +414,3 @@ process make_hdf5 {
   bshap methylation_percentage -i $allc -a new -b Chr1,1,100 -o temp -v
   """
 }
-
-/*
- * STEP 8 - Qualimap
-process qualimap {
-    tag "${bam.baseName}"
-    publishDir "${params.outdir}/qualimap", mode: 'copy'
-
-    input:
-    file bam from bam_dedup_qualimap
-
-    output:
-    file "${bam.baseName}_qualimap" into qualimap_results
-
-    script:
-    gcref = params.genome == 'GRCh37' ? '-gd HUMAN' : ''
-    gcref = params.genome == 'GRCm38' ? '-gd MOUSE' : ''
-    """
-    samtools sort $bam -o ${bam.baseName}.sorted.bam
-    qualimap bamqc $gcref \\
-        -bam ${bam.baseName}.sorted.bam \\
-        -outdir ${bam.baseName}_qualimap \\
-        --collect-overlap-pairs \\
-        --java-mem-size=${task.memory.toGiga()}G \\
-        -nt ${task.cpus}
-    """
-}
-*/
-
-/*
- * Parse software version numbers
-process get_software_versions {
-
-    output:
-    file 'software_versions_mqc.yaml' into software_versions_yaml
-
-    script:
-    """
-    echo "$params.version" &> v_ngi_methylseq.txt
-    echo "$workflow.nextflow.version" &> v_nextflow.txt
-    bismark_genome_preparation --version &> v_bismark_genome_preparation.txt
-    fastqc --version &> v_fastqc.txt
-    cutadapt --version &> v_cutadapt.txt
-    trim_galore --version &> v_trim_galore.txt
-    bismark --version &> v_bismark.txt
-    deduplicate_bismark --version &> v_deduplicate_bismark.txt
-    bismark_methylation_extractor --version &> v_bismark_methylation_extractor.txt
-    bismark2report --version &> v_bismark2report.txt
-    bismark2summary --version &> v_bismark2summary.txt
-    samtools --version &> v_samtools.txt
-    bwa &> v_bwa.txt 2>&1 || true
-    bwameth.py --version &> v_bwameth.txt
-    picard MarkDuplicates --version &> v_picard_markdups.txt 2>&1 || true
-    MethylDackel --version &> v_methyldackel.txt
-    qualimap --version &> v_qualimap.txt
-    multiqc --version &> v_multiqc.txt
-    scrape_software_versions.py &> software_versions_mqc.yaml
-    """
-}
-*/
-
-
-/*
- * STEP 9 - MultiQC
-process multiqc {
-    publishDir "${params.outdir}/MultiQC", mode: 'copy'
-
-    input:
-    file multiqc_config
-    file ('fastqc/*') from fastqc_results.toList()
-    file ('trimgalore/*') from trimgalore_results.toList()
-    file ('bismark/*') from bismark_align_log_3.toList()
-    file ('bismark/*') from bismark_dedup_log_3.toList()
-    file ('bismark/*') from bismark_splitting_report_3.toList()
-    file ('bismark/*') from bismark_mbias_3.toList()
-    file ('bismark/*') from bismark_reports_results.toList()
-    file ('bismark/*') from bismark_summary_results.toList()
-    file ('samtools/*') from flagstat_results.flatten().toList()
-    file ('samtools/*') from samtools_stats_results.flatten().toList()
-    file ('picard/*') from picard_results.flatten().toList()
-    file ('methyldackel/*') from methyldackel_results.flatten().toList()
-    file ('qualimap/*') from qualimap_results.toList()
-    file ('software_versions/*') from software_versions_yaml.toList()
-
-    output:
-    file "*_report.html" into multiqc_report
-    file "*_data"
-    file '.command.err' into multiqc_stderr
-
-    script:
-    rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-    rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-    """
-    multiqc -f $rtitle $rfilename --config $multiqc_config .
-    """
-}
-*/
-
-/*
- * Completion e-mail notification
- *
-workflow.onComplete {
-
-    // Set up the e-mail variables
-    def subject = "[nf-core/methylseq] Successful: $workflow.runName"
-    if(!workflow.success){
-      subject = "[nf-core/methylseq] FAILED: $workflow.runName"
-    }
-    def email_fields = [:]
-    email_fields['version'] = params.version
-    email_fields['runName'] = workflow.runName
-    email_fields['success'] = workflow.success
-    email_fields['dateComplete'] = workflow.complete
-    email_fields['duration'] = workflow.duration
-    email_fields['exitStatus'] = workflow.exitStatus
-    email_fields['errorMessage'] = (workflow.errorMessage ?: 'None')
-    email_fields['errorReport'] = (workflow.errorReport ?: 'None')
-    email_fields['commandLine'] = workflow.commandLine
-    email_fields['projectDir'] = workflow.projectDir
-    email_fields['summary'] = summary
-    email_fields['summary']['Date Started'] = workflow.start
-    email_fields['summary']['Date Completed'] = workflow.complete
-    email_fields['summary']['Pipeline script file path'] = workflow.scriptFile
-    email_fields['summary']['Pipeline script hash ID'] = workflow.scriptId
-    email_fields['summary']['Container'] = workflow.container
-    if(workflow.repository) email_fields['summary']['Pipeline repository Git URL'] = workflow.repository
-    if(workflow.commitId) email_fields['summary']['Pipeline repository Git Commit'] = workflow.commitId
-    if(workflow.revision) email_fields['summary']['Pipeline Git branch/tag'] = workflow.revision
-    email_fields['summary']['Nextflow Version'] = workflow.nextflow.version
-    email_fields['summary']['Nextflow Build'] = workflow.nextflow.build
-    email_fields['summary']['Nextflow Compile Timestamp'] = workflow.nextflow.timestamp
-
-    // Render the TXT template
-    def engine = new groovy.text.GStringTemplateEngine()
-    def tf = new File("$baseDir/assets/email_template.txt")
-    def txt_template = engine.createTemplate(tf).make(email_fields)
-    def email_txt = txt_template.toString()
-
-    // Render the HTML template
-    def hf = new File("$baseDir/assets/email_template.html")
-    def html_template = engine.createTemplate(hf).make(email_fields)
-    def email_html = html_template.toString()
-
-    // Render the sendmail template
-    def smail_fields = [ email: params.email, subject: subject, email_txt: email_txt, email_html: email_html, baseDir: "$baseDir" ]
-    def sf = new File("$baseDir/assets/sendmail_template.txt")
-    def sendmail_template = engine.createTemplate(sf).make(smail_fields)
-    def sendmail_html = sendmail_template.toString()
-
-    // Send the HTML e-mail
-    if (params.email) {
-        try {
-          if( params.plaintext_email ){ throw GroovyException('Send plaintext e-mail, not HTML') }
-          // Try to send HTML e-mail using sendmail
-          [ 'sendmail', '-t' ].execute() << sendmail_html
-          log.info "[nf-core/methylseq] Sent summary e-mail to $params.email (sendmail)"
-        } catch (all) {
-          // Catch failures and try with plaintext
-          [ 'mail', '-s', subject, params.email ].execute() << email_txt
-          log.info "[nf-core/methylseq] Sent summary e-mail to $params.email (mail)"
-        }
-    }
-
-    // Switch the embedded MIME images with base64 encoded src
-    ngimethylseqlogo = new File("$baseDir/assets/methylseq_logo.png").bytes.encodeBase64().toString()
-    scilifelablogo = new File("$baseDir/assets/SciLifeLab_logo.png").bytes.encodeBase64().toString()
-    ngilogo = new File("$baseDir/assets/NGI_logo.png").bytes.encodeBase64().toString()
-    email_html = email_html.replaceAll(~/cid:ngimethylseqlogo/, "data:image/png;base64,$ngimethylseqlogo")
-    email_html = email_html.replaceAll(~/cid:scilifelablogo/, "data:image/png;base64,$scilifelablogo")
-    email_html = email_html.replaceAll(~/cid:ngilogo/, "data:image/png;base64,$ngilogo")
-
-    // Write summary e-mail HTML to a file
-    def output_d = new File( "${params.outdir}/pipeline_info/" )
-    if( !output_d.exists() ) {
-      output_d.mkdirs()
-    }
-    def output_hf = new File( output_d, "pipeline_report.html" )
-    output_hf.withWriter { w -> w << email_html }
-    def output_tf = new File( output_d, "pipeline_report.txt" )
-    output_tf.withWriter { w -> w << email_txt }
-
-    log.info "[nf-core/methylseq] Pipeline Complete"
-
-    if(!workflow.success){
-        if( workflow.profile == 'standard'){
-            if ( "hostname".execute().text.contains('.uppmax.uu.se') ) {
-                log.error "====================================================\n" +
-                        "  WARNING! You are running with the default 'standard'\n" +
-                        "  pipeline config profile, which runs on the head node\n" +
-                        "  and assumes all software is on the PATH.\n" +
-                        "  This is probably why everything broke.\n" +
-                        "  Please use `-profile uppmax` to run on UPPMAX clusters.\n" +
-                        "============================================================"
-            }
-        }
-    }
-
-}
-*/

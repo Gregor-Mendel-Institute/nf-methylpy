@@ -29,7 +29,8 @@ params.outdir = './methylpy'
 params.umeth = "ChrC:"
 params.fasta = false
 params.file_ext = "bam"  // please change this accordingly..
-params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
+//params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
+params.tmpdir = "$SCRATCHDIR/tempFiles"
 params.snpcall = false
 
 params.name = false
@@ -255,73 +256,6 @@ if (build_index == true && params.aligner == 'methylpy'){
   built_methylpy_index = Channel.fromPath("${reffol}/${refid}_methylpy/${refid}*")
 }
 
-/*
-* PREPROCESSING - Build Bismark index
-*/
-if(!params.bismark_index && params.fasta && params.aligner == 'bismark'){
-    process makeBismarkIndex {
-        publishDir path: { params.saveReference ? "${params.outdir}/reference_genome" : params.outdir },
-                   saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta from fasta
-
-        output:
-        file "BismarkIndex" into bismark_index
-
-        script:
-        """
-        mkdir BismarkIndex
-        cp $fasta BismarkIndex/
-        bismark_genome_preparation BismarkIndex
-        """
-    }
-}
-
-
-/*
- * PREPROCESSING - Build bwa-mem index
- */
-if(!params.bwa_meth_index && params.fasta && params.aligner == 'bwameth'){
-    process makeBwaMemIndex {
-        tag fasta
-        publishDir path: "${params.outdir}/reference_genome", saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta from fasta
-
-        output:
-        file "${fasta}.bwameth.c2t.bwt" into bwa_meth_index
-        file "${fasta}*" into bwa_meth_indices
-
-        script:
-        """
-        bwameth.py index $fasta
-        """
-    }
-}
-
-/*
- * PREPROCESSING - Index Fasta file
- */
-if(!params.fasta_index && params.fasta && params.aligner == 'bwameth'){
-    process makeFastaIndex {
-        tag fasta
-        publishDir path: "${params.outdir}/reference_genome", saveAs: { params.saveReference ? it : null }, mode: 'copy'
-
-        input:
-        file fasta
-
-        output:
-        file "${fasta}.fai" into fasta_index
-
-        script:
-        """
-        samtools faidx $fasta
-        """
-    }
-}
-
 // Step 0, preprocessing input read files
 
 if (params.file_ext == "fastq"){
@@ -330,6 +264,7 @@ if (params.file_ext == "fastq"){
   process reads_preprocess {
     tag "$name"
     storeDir "${params.tmpdir}/rawreads"
+    label 'env_picard_small'
 
     input:
     set val(name), file(reads) from read_files_processing
@@ -368,6 +303,7 @@ if (params.file_ext == "fastq"){
  */
 process fastqc {
     tag "$name"
+    label 'env_quality'
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
 
@@ -392,6 +328,7 @@ if(params.notrim){
 } else {
     process trim_galore {
         tag "$name"
+        label 'env_quality'
         publishDir "${params.outdir}/trim_galore", mode: 'copy',
             saveAs: {filename ->
                 if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
@@ -417,11 +354,11 @@ if(params.notrim){
         non_directional = params.rrbs && params.non_directional ? "--non_directional" : ''
         if (params.singleEnd) {
             """
-            trim_galore --fastqc --gzip $illumina $rrbs $c_r1 $tpc_r1 $reads
+            trim_galore --fastqc --gzip $rrbs $c_r1 $tpc_r1 $reads
             """
         } else {
             """
-            trim_galore --paired --fastqc --gzip $illumina $rrbs $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
+            trim_galore --paired --fastqc --gzip $rrbs $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
             """
         }
     }
@@ -437,7 +374,9 @@ if(params.aligner == 'methylpy'){
             if (filename.indexOf(".bam") > 0) "alignedBams/$filename"
             else if (filename =~ '^allc' ) "allc/$filename"
             else if (filename =~ '^conversion' ) "info/$filename"
+            else if (filename =~ '^log' ) "info/log.${name}.txt"
           }
+    label 'env_methylpy'
 
     input:
     set val(name), file(reads) from trimmed_reads
@@ -449,6 +388,7 @@ if(params.aligner == 'methylpy'){
     set val(name), file("*processed_reads_no_clonal.bam") into bam_aligned
     set val(name), file("allc_*tsv.gz") into allc
     set val(name), file("conversion_rate_${name}.txt") into conv_rate
+    set val(name), file("log.txt") into log_file
 
     script:
     if (params.singleEnd) {
@@ -475,6 +415,7 @@ if(params.aligner == 'methylpy'){
   process bam_index {
     tag "$name"
     publishDir "${params.outdir}/alignedBams", mode: 'copy'
+    label 'env_picard_small'
 
     input:
     set val(name), file(bam) from bams_index
@@ -496,6 +437,7 @@ Make hdf5 files for the allc
 process make_hdf5 {
   tag { "$name" }
   publishDir "${params.outdir}/hdf5", mode: 'copy'
+  label 'env_pybshap'
 
   input:
   set val(name), file(allc) from allc
@@ -505,7 +447,7 @@ process make_hdf5 {
 
   script:
   """
-  bshap methylation_percentage -i $allc -a new -b Chr1,1,100 -o temp -v
+  bshap methylation_percentage -i $allc -a new -b ChrC,1,100 -o temp -v
   """
 }
 
@@ -516,6 +458,7 @@ if (params.snpcall){
 
   process add_readgroups {
     tag "$name"
+    label 'env_picard'
 
     input:
     set val(name), file(bam) from bams_snpcall
@@ -533,6 +476,7 @@ if (params.snpcall){
 
   process do_realignindel {
     tag "$name"
+    label 'env_snpcall'
 
     input:
     set val(name), file(bam), file(bam_index) from modifiedbam
@@ -550,6 +494,7 @@ if (params.snpcall){
 
   process do_snpcall {
     tag "$name"
+    label 'env_snpcall'
 
     input:
     set val(name), file(bam), file(bam_index) from realignedbam
@@ -572,6 +517,7 @@ if (params.snpcall){
   process get_snps_from_vcf {
     tag "$name"
     publishDir "${params.outdir}/vcfbed", mode: 'copy'
+    label 'env_bcftools'
 
     input:
     set val(name), file(vcf) from vcffile
@@ -585,566 +531,3 @@ if (params.snpcall){
     """
   }
 }
-
-
-/*
- * STEP 3.1 - align with Bismark
- */
-if(params.aligner == 'bismark'){
-    process bismark_align {
-        tag "$name"
-        publishDir "${params.outdir}/bismark_alignments", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf(".fq.gz") > 0) "unmapped/$filename"
-                else if (filename.indexOf(".bam") == -1) "logs/$filename"
-                else params.saveAlignedIntermediates || params.nodedup || params.rrbs ? filename : null
-            }
-
-        input:
-        set val(name), file(reads) from trimmed_reads
-        file index from bismark_index.collect()
-
-        output:
-        file "*.bam" into bam, bam_2
-        file "*report.txt" into bismark_align_log_1, bismark_align_log_2, bismark_align_log_3
-        if(params.unmapped){ file "*.fq.gz" into bismark_unmapped }
-
-        script:
-        pbat = params.pbat ? "--pbat" : ''
-        non_directional = params.single_cell || params.zymo || params.non_directional ? "--non_directional" : ''
-        unmapped = params.unmapped ? "--unmapped" : ''
-        mismatches = params.relaxMismatches ? "--score_min L,0,-${params.numMismatches}" : ''
-        multicore = ''
-        if (task.cpus){
-            // Numbers based on recommendation by Felix for a typical mouse genome
-            if(params.single_cell || params.zymo || params.non_directional){
-                cpu_per_multicore = 5
-                mem_per_multicore = (18.GB).toBytes()
-            } else {
-                cpu_per_multicore = 3
-                mem_per_multicore = (13.GB).toBytes()
-            }
-            // How many multicore splits can we afford with the cpus we have?
-            ccore = ((task.cpus as int) / cpu_per_multicore) as int
-            // Check that we have enough memory, assuming 13GB memory per instance (typical for mouse alignment)
-            try {
-                tmem = (task.memory as nextflow.util.MemoryUnit).toBytes()
-                mcore = (tmem / mem_per_multicore) as int
-                ccore = Math.min(ccore, mcore)
-            } catch (all) {
-                log.debug "Not able to define bismark align multicore based on available memory"
-            }
-            if(ccore > 1){
-              multicore = "--multicore $ccore"
-            }
-        }
-        if (params.singleEnd) {
-            """
-            bismark \\
-                --bam $pbat $non_directional $unmapped $mismatches $multicore \\
-                --genome $index \\
-                $reads
-            """
-        } else {
-            """
-            bismark \\
-                --bam $pbat $non_directional $unmapped $mismatches $multicore \\
-                --genome $index \\
-                -1 ${reads[0]} \\
-                -2 ${reads[1]}
-            """
-        }
-    }
-
-    /*
-     * STEP 4 - Bismark deduplicate
-     */
-    if (params.nodedup || params.rrbs) {
-        bam.into { bam_dedup; bam_dedup_qualimap }
-        bismark_dedup_log_1 = Channel.from(false)
-        bismark_dedup_log_2 = Channel.from(false)
-        bismark_dedup_log_3 = Channel.from(false)
-    } else {
-        process bismark_deduplicate {
-            tag "${bam.baseName}"
-            publishDir "${params.outdir}/bismark_deduplicated", mode: 'copy',
-                saveAs: {filename -> filename.indexOf(".bam") == -1 ? "logs/$filename" : "$filename"}
-
-            input:
-            file bam
-
-            output:
-            file "${bam.baseName}.deduplicated.bam" into bam_dedup, bam_dedup_qualimap
-            file "${bam.baseName}.deduplication_report.txt" into bismark_dedup_log_1, bismark_dedup_log_2, bismark_dedup_log_3
-
-            script:
-            if (params.singleEnd) {
-                """
-                deduplicate_bismark -s --bam $bam
-                """
-            } else {
-                """
-                deduplicate_bismark -p --bam $bam
-                """
-            }
-        }
-    }
-
-    /*
-     * STEP 5 - Bismark methylation extraction
-     */
-    process bismark_methXtract {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/bismark_methylation_calls", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf("splitting_report.txt") > 0) "logs/$filename"
-                else if (filename.indexOf("M-bias") > 0) "m-bias/$filename"
-                else if (filename.indexOf(".cov") > 0) "methylation_coverage/$filename"
-                else if (filename.indexOf("bedGraph") > 0) "bedGraph/$filename"
-                else "methylation_calls/$filename"
-            }
-
-        input:
-        file bam from bam_dedup
-
-        output:
-        file "${bam.baseName}_splitting_report.txt" into bismark_splitting_report_1, bismark_splitting_report_2, bismark_splitting_report_3
-        file "${bam.baseName}.M-bias.txt" into bismark_mbias_1, bismark_mbias_2, bismark_mbias_3
-        file '*.{png,gz}' into bismark_methXtract_results
-
-        script:
-        comprehensive = params.comprehensive ? '--comprehensive --merge_non_CpG' : ''
-        multicore = ''
-        if (task.cpus){
-            // Numbers based on Bismark docs
-            ccore = ((task.cpus as int) / 10) as int
-            if(ccore > 1){
-              multicore = "--multicore $ccore"
-            }
-        }
-        buffer = ''
-        if (task.memory){
-            mbuffer = (task.memory as nextflow.util.MemoryUnit) - 2.GB
-            // only set if we have more than 6GB available
-            if(mbuffer.compareTo(4.GB) == 1){
-              buffer = "--buffer_size ${mbuffer.toGiga()}G"
-            }
-        }
-        if (params.singleEnd) {
-            """
-            bismark_methylation_extractor $comprehensive \\
-                $multicore $buffer \\
-                --bedGraph \\
-                --counts \\
-                --gzip \\
-                -s \\
-                --report \\
-                $bam
-            """
-        } else {
-            """
-            bismark_methylation_extractor $comprehensive \\
-                $multicore $buffer \\
-                --ignore_r2 2 \\
-                --ignore_3prime_r2 2 \\
-                --bedGraph \\
-                --counts \\
-                --gzip \\
-                -p \\
-                --no_overlap \\
-                --report \\
-                $bam
-            """
-        }
-    }
-
-
-    /*
-     * STEP 6 - Bismark Sample Report
-     */
-    process bismark_report {
-        tag "$name"
-        publishDir "${params.outdir}/bismark_reports", mode: 'copy'
-
-        input:
-        file bismark_align_log_1
-        file bismark_dedup_log_1
-        file bismark_splitting_report_1
-        file bismark_mbias_1
-
-        output:
-        file '*{html,txt}' into bismark_reports_results
-
-        script:
-        name = bismark_align_log_1.toString() - ~/(_R1)?(_trimmed|_val_1).+$/
-        """
-        bismark2report \\
-            --alignment_report $bismark_align_log_1 \\
-            --dedup_report $bismark_dedup_log_1 \\
-            --splitting_report $bismark_splitting_report_1 \\
-            --mbias_report $bismark_mbias_1
-        """
-    }
-
-    /*
-     * STEP 7 - Bismark Summary Report
-     */
-    process bismark_summary {
-        publishDir "${params.outdir}/bismark_summary", mode: 'copy'
-
-        input:
-        file ('*') from bam_2.collect()
-        file ('*') from bismark_align_log_2.collect()
-        file ('*') from bismark_dedup_log_2.collect()
-        file ('*') from bismark_splitting_report_2.collect()
-        file ('*') from bismark_mbias_2.collect()
-
-        output:
-        file '*{html,txt}' into bismark_summary_results
-
-        script:
-        """
-        bismark2summary
-        """
-    }
-} // End of bismark processing block
-else {
-    bismark_align_log_3 = Channel.from(false)
-    bismark_dedup_log_3 = Channel.from(false)
-    bismark_splitting_report_3 = Channel.from(false)
-    bismark_mbias_3 = Channel.from(false)
-    bismark_reports_results = Channel.from(false)
-    bismark_summary_results = Channel.from(false)
-}
-
-
-/*
- * Process with bwa-mem and assorted tools
- */
-if(params.aligner == 'bwameth'){
-    process bwamem_align {
-        tag "$name"
-        publishDir "${params.outdir}/bwa-mem_alignments", mode: 'copy',
-            saveAs: { fn -> params.saveAlignedIntermediates ? fn : null }
-
-        input:
-        set val(name), file(reads) from trimmed_reads
-        file bwa_meth_indices from bwa_meth_indices.collect()
-
-        output:
-        file '*.bam' into bam_aligned
-
-        script:
-        fasta = bwa_meth_indices[0].toString() - '.bwameth' - '.c2t' - '.amb' - '.ann' - '.bwt' - '.pac' - '.sa'
-        prefix = reads[0].toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
-        """
-        bwameth.py \\
-            --threads ${task.cpus} \\
-            --reference $fasta \\
-            $reads | samtools view -bS - > ${prefix}.bam
-        """
-    }
-
-
-    /*
-     * STEP 4.- samtools flagstat on samples
-     */
-    process samtools_sort_index_flagstat {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/bwa-mem_alignments", mode: 'copy',
-            saveAs: {filename ->
-                if (filename.indexOf(".txt") > 0) "logs/$filename"
-                else if (params.saveAlignedIntermediates || params.nodedup || params.rrbs) filename
-                else null
-            }
-
-        input:
-        file bam from bam_aligned
-
-        output:
-        file "${bam.baseName}.sorted.bam" into bam_sorted
-        file "${bam.baseName}.sorted.bam.bai" into bam_index
-        file "${bam.baseName}_flagstat.txt" into flagstat_results
-        file "${bam.baseName}_stats.txt" into samtools_stats_results
-
-        script:
-        """
-        samtools sort \\
-            $bam \\
-            -m ${task.memory.toBytes() / task.cpus} \\
-            -@ ${task.cpus} \\
-            > ${bam.baseName}.sorted.bam
-        samtools index ${bam.baseName}.sorted.bam
-        samtools flagstat ${bam.baseName}.sorted.bam > ${bam.baseName}_flagstat.txt
-        samtools stats ${bam.baseName}.sorted.bam > ${bam.baseName}_stats.txt
-        """
-    }
-
-    /*
-     * STEP 5 - Mark duplicates
-     */
-    if (params.nodedup || params.rrbs) {
-        bam_sorted.into { bam_md; bam_dedup_qualimap }
-        bam_index.set { bam_md_bai }
-        picard_results = Channel.from(false)
-    } else {
-        process markDuplicates {
-            tag "${bam.baseName}"
-            publishDir "${params.outdir}/bwa-mem_markDuplicates", mode: 'copy',
-                saveAs: {filename -> filename.indexOf(".bam") == -1 ? "logs/$filename" : "$filename"}
-
-            input:
-            file bam from bam_sorted
-
-            output:
-            file "${bam.baseName}.markDups.bam" into bam_md, bam_dedup_qualimap
-            file "${bam.baseName}.markDups.bam.bai" into bam_md_bai
-            file "${bam.baseName}.markDups_metrics.txt" into picard_results
-
-            script:
-            """
-            picard MarkDuplicates \\
-                INPUT=$bam \\
-                OUTPUT=${bam.baseName}.markDups.bam \\
-                METRICS_FILE=${bam.baseName}.markDups_metrics.txt \\
-                REMOVE_DUPLICATES=false \\
-                ASSUME_SORTED=true \\
-                PROGRAM_RECORD_ID='null' \\
-                VALIDATION_STRINGENCY=LENIENT
-            samtools index ${bam.baseName}.markDups.bam
-            """
-        }
-    }
-
-    /*
-     * STEP 6 - extract methylation with MethylDackel
-     */
-    process methyldackel {
-        tag "${bam.baseName}"
-        publishDir "${params.outdir}/MethylDackel", mode: 'copy'
-
-        input:
-        file bam from bam_md
-        file bam_index from bam_md_bai
-        file fasta from fasta
-        file fasta_index from fasta_index
-
-        output:
-        file '*' into methyldackel_results
-
-        script:
-        allcontexts = params.comprehensive ? '--CHG --CHH' : ''
-        mindepth = params.mindepth > 0 ? "--minDepth ${params.mindepth}" : ''
-        ignoreFlags = params.ignoreFlags ? "--ignoreFlags" : ''
-        """
-        MethylDackel extract $allcontexts $ignoreFlags $mindepth $fasta $bam
-        MethylDackel mbias $allcontexts $ignoreFlags $fasta $bam ${bam.baseName}
-        """
-    }
-
-} // end of bwa-meth if block
-else {
-    flagstat_results = Channel.from(false)
-    samtools_stats_results = Channel.from(false)
-    picard_results = Channel.from(false)
-    methyldackel_results = Channel.from(false)
-}
-
-
-/*
- * STEP 8 - Qualimap
-process qualimap {
-    tag "${bam.baseName}"
-    publishDir "${params.outdir}/qualimap", mode: 'copy'
-
-    input:
-    file bam from bam_dedup_qualimap
-
-    output:
-    file "${bam.baseName}_qualimap" into qualimap_results
-
-    script:
-    gcref = params.genome == 'GRCh37' ? '-gd HUMAN' : ''
-    gcref = params.genome == 'GRCm38' ? '-gd MOUSE' : ''
-    """
-    samtools sort $bam -o ${bam.baseName}.sorted.bam
-    qualimap bamqc $gcref \\
-        -bam ${bam.baseName}.sorted.bam \\
-        -outdir ${bam.baseName}_qualimap \\
-        --collect-overlap-pairs \\
-        --java-mem-size=${task.memory.toGiga()}G \\
-        -nt ${task.cpus}
-    """
-}
-*/
-
-/*
- * Parse software version numbers
-process get_software_versions {
-
-    output:
-    file 'software_versions_mqc.yaml' into software_versions_yaml
-
-    script:
-    """
-    echo "$params.version" &> v_ngi_methylseq.txt
-    echo "$workflow.nextflow.version" &> v_nextflow.txt
-    bismark_genome_preparation --version &> v_bismark_genome_preparation.txt
-    fastqc --version &> v_fastqc.txt
-    cutadapt --version &> v_cutadapt.txt
-    trim_galore --version &> v_trim_galore.txt
-    bismark --version &> v_bismark.txt
-    deduplicate_bismark --version &> v_deduplicate_bismark.txt
-    bismark_methylation_extractor --version &> v_bismark_methylation_extractor.txt
-    bismark2report --version &> v_bismark2report.txt
-    bismark2summary --version &> v_bismark2summary.txt
-    samtools --version &> v_samtools.txt
-    bwa &> v_bwa.txt 2>&1 || true
-    bwameth.py --version &> v_bwameth.txt
-    picard MarkDuplicates --version &> v_picard_markdups.txt 2>&1 || true
-    MethylDackel --version &> v_methyldackel.txt
-    qualimap --version &> v_qualimap.txt
-    multiqc --version &> v_multiqc.txt
-    scrape_software_versions.py &> software_versions_mqc.yaml
-    """
-}
-*/
-
-
-/*
- * STEP 9 - MultiQC
-process multiqc {
-    publishDir "${params.outdir}/MultiQC", mode: 'copy'
-
-    input:
-    file multiqc_config
-    file ('fastqc/*') from fastqc_results.toList()
-    file ('trimgalore/*') from trimgalore_results.toList()
-    file ('bismark/*') from bismark_align_log_3.toList()
-    file ('bismark/*') from bismark_dedup_log_3.toList()
-    file ('bismark/*') from bismark_splitting_report_3.toList()
-    file ('bismark/*') from bismark_mbias_3.toList()
-    file ('bismark/*') from bismark_reports_results.toList()
-    file ('bismark/*') from bismark_summary_results.toList()
-    file ('samtools/*') from flagstat_results.flatten().toList()
-    file ('samtools/*') from samtools_stats_results.flatten().toList()
-    file ('picard/*') from picard_results.flatten().toList()
-    file ('methyldackel/*') from methyldackel_results.flatten().toList()
-    file ('qualimap/*') from qualimap_results.toList()
-    file ('software_versions/*') from software_versions_yaml.toList()
-
-    output:
-    file "*_report.html" into multiqc_report
-    file "*_data"
-    file '.command.err' into multiqc_stderr
-
-    script:
-    rtitle = custom_runName ? "--title \"$custom_runName\"" : ''
-    rfilename = custom_runName ? "--filename " + custom_runName.replaceAll('\\W','_').replaceAll('_+','_') + "_multiqc_report" : ''
-    """
-    multiqc -f $rtitle $rfilename --config $multiqc_config .
-    """
-}
-*/
-
-/*
- * Completion e-mail notification
- *
-workflow.onComplete {
-
-    // Set up the e-mail variables
-    def subject = "[nf-core/methylseq] Successful: $workflow.runName"
-    if(!workflow.success){
-      subject = "[nf-core/methylseq] FAILED: $workflow.runName"
-    }
-    def email_fields = [:]
-    email_fields['version'] = params.version
-    email_fields['runName'] = workflow.runName
-    email_fields['success'] = workflow.success
-    email_fields['dateComplete'] = workflow.complete
-    email_fields['duration'] = workflow.duration
-    email_fields['exitStatus'] = workflow.exitStatus
-    email_fields['errorMessage'] = (workflow.errorMessage ?: 'None')
-    email_fields['errorReport'] = (workflow.errorReport ?: 'None')
-    email_fields['commandLine'] = workflow.commandLine
-    email_fields['projectDir'] = workflow.projectDir
-    email_fields['summary'] = summary
-    email_fields['summary']['Date Started'] = workflow.start
-    email_fields['summary']['Date Completed'] = workflow.complete
-    email_fields['summary']['Pipeline script file path'] = workflow.scriptFile
-    email_fields['summary']['Pipeline script hash ID'] = workflow.scriptId
-    email_fields['summary']['Container'] = workflow.container
-    if(workflow.repository) email_fields['summary']['Pipeline repository Git URL'] = workflow.repository
-    if(workflow.commitId) email_fields['summary']['Pipeline repository Git Commit'] = workflow.commitId
-    if(workflow.revision) email_fields['summary']['Pipeline Git branch/tag'] = workflow.revision
-    email_fields['summary']['Nextflow Version'] = workflow.nextflow.version
-    email_fields['summary']['Nextflow Build'] = workflow.nextflow.build
-    email_fields['summary']['Nextflow Compile Timestamp'] = workflow.nextflow.timestamp
-
-    // Render the TXT template
-    def engine = new groovy.text.GStringTemplateEngine()
-    def tf = new File("$baseDir/assets/email_template.txt")
-    def txt_template = engine.createTemplate(tf).make(email_fields)
-    def email_txt = txt_template.toString()
-
-    // Render the HTML template
-    def hf = new File("$baseDir/assets/email_template.html")
-    def html_template = engine.createTemplate(hf).make(email_fields)
-    def email_html = html_template.toString()
-
-    // Render the sendmail template
-    def smail_fields = [ email: params.email, subject: subject, email_txt: email_txt, email_html: email_html, baseDir: "$baseDir" ]
-    def sf = new File("$baseDir/assets/sendmail_template.txt")
-    def sendmail_template = engine.createTemplate(sf).make(smail_fields)
-    def sendmail_html = sendmail_template.toString()
-
-    // Send the HTML e-mail
-    if (params.email) {
-        try {
-          if( params.plaintext_email ){ throw GroovyException('Send plaintext e-mail, not HTML') }
-          // Try to send HTML e-mail using sendmail
-          [ 'sendmail', '-t' ].execute() << sendmail_html
-          log.info "[nf-core/methylseq] Sent summary e-mail to $params.email (sendmail)"
-        } catch (all) {
-          // Catch failures and try with plaintext
-          [ 'mail', '-s', subject, params.email ].execute() << email_txt
-          log.info "[nf-core/methylseq] Sent summary e-mail to $params.email (mail)"
-        }
-    }
-
-    // Switch the embedded MIME images with base64 encoded src
-    ngimethylseqlogo = new File("$baseDir/assets/methylseq_logo.png").bytes.encodeBase64().toString()
-    scilifelablogo = new File("$baseDir/assets/SciLifeLab_logo.png").bytes.encodeBase64().toString()
-    ngilogo = new File("$baseDir/assets/NGI_logo.png").bytes.encodeBase64().toString()
-    email_html = email_html.replaceAll(~/cid:ngimethylseqlogo/, "data:image/png;base64,$ngimethylseqlogo")
-    email_html = email_html.replaceAll(~/cid:scilifelablogo/, "data:image/png;base64,$scilifelablogo")
-    email_html = email_html.replaceAll(~/cid:ngilogo/, "data:image/png;base64,$ngilogo")
-
-    // Write summary e-mail HTML to a file
-    def output_d = new File( "${params.outdir}/pipeline_info/" )
-    if( !output_d.exists() ) {
-      output_d.mkdirs()
-    }
-    def output_hf = new File( output_d, "pipeline_report.html" )
-    output_hf.withWriter { w -> w << email_html }
-    def output_tf = new File( output_d, "pipeline_report.txt" )
-    output_tf.withWriter { w -> w << email_txt }
-
-    log.info "[nf-core/methylseq] Pipeline Complete"
-
-    if(!workflow.success){
-        if( workflow.profile == 'standard'){
-            if ( "hostname".execute().text.contains('.uppmax.uu.se') ) {
-                log.error "====================================================\n" +
-                        "  WARNING! You are running with the default 'standard'\n" +
-                        "  pipeline config profile, which runs on the head node\n" +
-                        "  and assumes all software is on the PATH.\n" +
-                        "  This is probably why everything broke.\n" +
-                        "  Please use `-profile uppmax` to run on UPPMAX clusters.\n" +
-                        "============================================================"
-            }
-        }
-    }
-
-}
-*/
