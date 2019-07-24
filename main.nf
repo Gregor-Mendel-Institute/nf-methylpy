@@ -29,8 +29,6 @@ params.outdir = './methylpy'
 params.umeth = "ChrC:"
 params.fasta = false
 params.file_ext = "bam"  // please change this accordingly..
-//params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
-params.tmpdir = "$SCRATCHDIR/tempFiles"
 params.snpcall = false
 
 params.name = false
@@ -281,7 +279,7 @@ if (params.file_ext == "fastq"){
         """
       } else if (reads.getExtension() == "bam") {
         """
-        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${name}.fastq VALIDATION_STRINGENCY=LENIENT
+        picard SamToFastq I=$reads FASTQ=${name}.fastq VALIDATION_STRINGENCY=LENIENT
         """
       }
     } else {
@@ -291,7 +289,7 @@ if (params.file_ext == "fastq"){
         """
       } else if (reads.getExtension() == "bam") {
         """
-        java -jar \${EBROOTPICARD}/picard.jar SamToFastq I=$reads FASTQ=${name}_1.fastq SECOND_END_FASTQ=${name}_2.fastq VALIDATION_STRINGENCY=LENIENT
+        picard SamToFastq I=$reads FASTQ=${name}_1.fastq SECOND_END_FASTQ=${name}_2.fastq VALIDATION_STRINGENCY=LENIENT
         """
       }
     }
@@ -394,13 +392,13 @@ if(params.aligner == 'methylpy'){
     if (params.singleEnd) {
         """
         export TMPDIR="${params.tmpdir}"
-        methylpy single-end-pipeline --read-files ${reads} --sample $name --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+        methylpy single-end-pipeline --read-files ${reads} --sample $name --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta   --num-procs ${task.cpus}  --remove-clonal True --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${name}.txt
         """
     } else {
         """
         export TMPDIR="${params.tmpdir}"
-        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${name}  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+        methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${name}  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $fasta  --num-procs ${task.cpus} --remove-clonal True --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
         cat log.txt | grep "non-conversion rate" > conversion_rate_${name}.txt
         """
     }
@@ -468,7 +466,7 @@ if (params.snpcall){
 
     script:
     """
-    java -Djava.io.tmpdir=${params.tmpdir} -jar \${EBROOTPICARD}/picard.jar AddOrReplaceReadGroups INPUT=$bam OUTPUT=${name}.modified.bam ID=${name} LB=${name} PL=illumina PU=none SM=${name}
+    picard AddOrReplaceReadGroups INPUT=$bam OUTPUT=${name}.modified.bam ID=${name} LB=${name} PL=illumina PU=none SM=${name}
     samtools index ${name}.modified.bam
     """
   }
