@@ -27,16 +27,12 @@ params.project = "cegs"
 params.aligner = "methylpy"
 if( params.aligner != "methylpy" ) exit 1, "This pipeline has been written only for methylpy, please choose methylpy as aligner"
 params.umeth = "ChrC:"
-params.tmpdir = "/lustre/scratch/users/rahul.pisupati/tempFiles/"
 
 params.name = false
 params.clusterOptions = false
 params.email = false
 params.plaintext_email = false
 params.genome = false
-params.bismark_index = params.genome ? params.genomes[ params.genome ].bismark ?: false : false
-params.bwa_meth_index = params.genome ? params.genomes[ params.genome ].bwa_meth ?: false : false
-params.fasta_index = params.genome ? params.genomes[ params.genome ].fasta_index ?: false : false
 
 // Check that Nextflow version is up to date enough
 // try / throw / catch works for NF versions < 0.25 when this was implemented
@@ -50,23 +46,6 @@ try {
             "  Pipeline execution will continue, but things may break.\n" +
             "  Please run `nextflow self-update` to update Nextflow.\n" +
             "============================================================"
-}
-// Show a big error message if we're running on the base config and an uppmax cluster
-if( workflow.profile == 'standard'){
-    if ( "hostname".execute().text.contains('.uppmax.uu.se') ) {
-        log.error "====================================================\n" +
-                  "  WARNING! You are running with the default 'standard'\n" +
-                  "  pipeline config profile, which runs on the head node\n" +
-                  "  and assumes all software is on the PATH.\n" +
-                  "  ALL JOBS ARE RUNNING LOCALLY and stuff will probably break.\n" +
-                  "  Please use `-profile uppmax` to run on UPPMAX clusters.\n" +
-                  "============================================================"
-    }
-}
-
-// Validate inputs
-if( workflow.profile == 'uppmax' || workflow.profile == 'uppmax_devel' ){
-    if ( !params.project ) exit 1, "No UPPMAX project ID found! Use --project"
 }
 
 // Has the run name been specified by the user?
@@ -198,7 +177,7 @@ process makeMethylpyIndex {
   r_ref = "$reffol/${refid}_methylpy/${refid}_r"
   """
   samtools faidx ${genome}
-  methylpy build-reference --input-files ${genome} --output-prefix ${refid} --bowtie2 True
+  methylpy build-reference --input-files ${genome} --output-prefix ${refid}
   """
 }
 
@@ -350,6 +329,7 @@ process methylpy_align {
           if (filename.indexOf(".bam") > 0) "alignedBams/$filename"
           else if (filename =~ '^allc' ) "allc/$filename"
           else if (filename =~ '^conversion' ) "info/$filename"
+          else if (filename =~ '^log' ) "info/log.${name}.txt"
         }
   label 'env_methylpy'
 
@@ -357,9 +337,9 @@ process methylpy_align {
   set val(accID), file(reads), val(library_id), file(genome), file(meth_index) from input_reads_methylpy
 
   output:
-  set val(accID), file("*processed_reads_no_clonal.bam") into bam_aligned
-  set val(accID), file("allc_*tsv.gz*") into allc
-  set val(accID), file("conversion_rate_${prefix}.txt") into conv_rate
+  set val(prefix), file("*processed_reads_no_clonal.bam") into bam_aligned
+  set val(prefix), file("allc_*tsv.gz*") into allc
+  set val(prefix), file("conversion_rate_${prefix}.txt") into conv_rate
 
   script:
   reffol = genome.parent
@@ -368,29 +348,29 @@ process methylpy_align {
       prefix = reads.toString() - ~/(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
       """
       export TMPDIR="${params.tmpdir}"
-      methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome   --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \$EBROOTPICARD  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+      methylpy single-end-pipeline --read-files ${reads} --sample $prefix --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome   --num-procs ${task.cpus}  --remove-clonal True   --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
       cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
       """
   } else {
       prefix = reads[0].toString() - ~/(_1)?(_R1)?(_trimmed)?(_val_1)?(\.fq)?(\.fastq)?(\.gz)?$/
       """
       export TMPDIR="${params.tmpdir}"
-      methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample ${prefix}  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome  --num-procs ${task.cpus}  --remove-clonal True  --path-to-picard \${EBROOTPICARD}  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
+      methylpy paired-end-pipeline --read1-files ${reads[0]}  --read2-files ${reads[1]}  --sample $prefix  --forward-ref ${refid}_f  --reverse-ref ${refid}_r  --ref-fasta  $genome  --num-procs ${task.cpus}  --remove-clonal True  --binom-test True  --unmethylated-control ${params.umeth} --java-options="-Djava.io.tmpdir=${params.tmpdir}" > log.txt 2>&1
       cat log.txt | grep "non-conversion rate" > conversion_rate_${prefix}.txt
       """
   }
 }
 
 process bam_index {
-  tag { "${accID}_$bam" }
+  tag { "${prefix}" }
   publishDir "${params.outdir}/alignedBams", mode: 'copy'
   label 'env_picard_small'
 
   input:
-  set val(accID), file(bam) from bam_aligned
+  set val(prefix), file(bam) from bam_aligned
 
   output:
-  set val(accID), file("*processed_reads_no_clonal.bam.bai") into aligned_bam_index
+  set val(prefix), file("*processed_reads_no_clonal.bam.bai") into aligned_bam_index
 
   script:
   """
@@ -399,15 +379,15 @@ process bam_index {
 }
 
 process make_hdf5 {
-  tag { "${accID}_$allc" }
+  tag { "${prefix}" }
   publishDir "${params.outdir}/hdf5", mode: 'copy'
   label 'env_pybshap'
 
   input:
-  set val(accID), file(allc) from allc
+  set val(prefix), file(allc) from allc
 
   output:
-  set val(accID), file("*hdf5") into hdf5_out
+  set val(prefix), file("*hdf5") into hdf5_out
 
   script:
   """

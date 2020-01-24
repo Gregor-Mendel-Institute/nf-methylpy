@@ -474,7 +474,7 @@ if (params.snpcall){
 
   process do_realignindel {
     tag "$name"
-    label 'env_snpcall'
+    label 'env_snpcall_small'
 
     input:
     set val(name), file(bam), file(bam_index) from modifiedbam
@@ -515,7 +515,7 @@ if (params.snpcall){
   process get_snps_from_vcf {
     tag "$name"
     publishDir "${params.outdir}/vcfbed", mode: 'copy'
-    label 'env_bcftools'
+    label 'env_snpcall_small'
 
     input:
     set val(name), file(vcf) from vcffile
