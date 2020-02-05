@@ -5,8 +5,7 @@ FROM continuumio/anaconda3:latest
 MAINTAINER Rahul Pisupati <rahul.pisupati@gmi.oeaw.ac.at>
 LABEL authors="rahul.pisupati@gmi.oeaw.ac.at" \
     description="Docker image containing all requirements for the nf-core/methylpy pipeline"
-RUN apt-get update --fix-missing && apt-get install -y build-essential \
-RUN apt-get install -y --no-install-recommends apt-utils && apt-get -y install zlib1g-dev && apt-get -y install libbz2-dev libcurl4-gnutls-dev libssl-dev
+RUN apt-get -y update --fix-missing && apt-get -y install build-essential apt-utils && apt-get -y install zlib1g-dev && apt-get -y install libbz2-dev libcurl4-gnutls-dev libssl-dev
 COPY environment.yml /
 RUN conda env create -f /environment.yml && conda clean -a
 # install dependencies for DMRfind
