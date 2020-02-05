@@ -21,6 +21,5 @@ RUN wget --quiet https://repo.anaconda.com/archive/Anaconda2-5.3.0-Linux-x86_64.
 # RUN apt-get -y -m update && apt-get install -y libgsl-dev libgsl2  build-essential git zlib1g-dev lib32z1-dev
 COPY environment.yml /
 RUN conda env create -f /environment.yml && conda clean -a
-ENV PATH /opt/conda/envs/nfcore-methylseq/bin:$PATH
 RUN git clone https://github.com/yupenghe/methylpy.git
-RUN g++ -O3 -l gsl -l gslcblas -o /opt/conda/envs/nfcore-methylseq/bin/run_rms_tests.out methylpy/methylpy/rms.cpp
+RUN g++ -O3 -l gsl -l gslcblas -o /opt/conda/envs/methylpy/bin/run_rms_tests.out methylpy/methylpy/rms.cpp
