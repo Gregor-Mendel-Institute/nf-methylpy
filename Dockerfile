@@ -1,25 +1,16 @@
 #############################################################
-# Dockerfile tools for methylpy
+# Dockerfile tools for nf-methylpy
 #############################################################
-FROM ubuntu:18.04
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+FROM continuumio/anaconda3:latest
 MAINTAINER Rahul Pisupati <rahul.pisupati@gmi.oeaw.ac.at>
 LABEL authors="rahul.pisupati@gmi.oeaw.ac.at" \
     description="Docker image containing all requirements for the nf-core/methylpy pipeline"
-# Get basic ubuntu packages needed
-ENV PATH /opt/conda/bin:$PATH
-RUN apt-get update --fix-missing && apt-get install -y wget bzip2 ca-certificates \
-    libglib2.0-0 libxext6 libsm6 libxrender1  \
-    git mercurial subversion \
-    build-essential libgsl0-dev
-RUN wget --quiet https://repo.anaconda.com/archive/Anaconda2-5.3.0-Linux-x86_64.sh -O ~/anaconda.sh && \
-    /bin/bash ~/anaconda.sh -b -p /opt/conda && \
-    rm ~/anaconda.sh && \
-    ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh && \
-    echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
-    echo "conda activate base" >> ~/.bashrc
-# RUN apt-get -y -m update && apt-get install -y libgsl-dev libgsl2  build-essential git zlib1g-dev lib32z1-dev
+RUN apt-get update --fix-missing && apt-get install -y build-essential \
+RUN apt-get install -y --no-install-recommends apt-utils && apt-get -y install zlib1g-dev && apt-get -y install libbz2-dev libcurl4-gnutls-dev libssl-dev
 COPY environment.yml /
 RUN conda env create -f /environment.yml && conda clean -a
+# install dependencies for DMRfind
 RUN git clone https://github.com/yupenghe/methylpy.git
-RUN g++ -O3 -l gsl -l gslcblas -o /opt/conda/envs/methylpy/bin/run_rms_tests.out methylpy/methylpy/rms.cpp
+RUN apt-get -y install libgsl-dev libgslcblas0
+RUN ln -s /usr/lib/x86_64-linux-gnu/libgsl.so.23 lib/libgsl.so.0
+RUN g++ -O3 -o /opt/conda/envs/methylpy/bin/run_rms_tests.out methylpy/methylpy/rms.cpp -l gsl -l gslcblas
